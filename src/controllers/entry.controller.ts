@@ -18,6 +18,29 @@ type YearlyMonthSummary = SummaryTotals & {
   monthName: string;
 };
 
+type AverageEntry = {
+  salesCount?: number;
+  cash?: number;
+  phonePe?: number;
+  total?: number;
+  expense?: number;
+  profit?: number;
+  isHoliday?: boolean;
+};
+
+type AverageTotals = {
+  salesCount: number;
+  cash: number;
+  phonePe: number;
+  total: number;
+  expense: number;
+  profit: number;
+};
+
+type MonthlyAveragesForPdf = AverageTotals & {
+  workingDaysCount: number;
+};
+
 const entrySchema = z.object({
   date: z.string().min(1, "Date is required"),
   salesCount: z.number().int().nonnegative().default(0),
@@ -72,6 +95,52 @@ const formatMoneyForPdf = (value: number) => {
   }).format(Number(value) || 0)}`;
 };
 
+const getAverageForPdf = (total: number, count: number) => {
+  if (count === 0) {
+    return 0;
+  }
+
+  return Math.round(total / count);
+};
+
+const calculateMonthlyAveragesForPdf = (
+  entries: AverageEntry[],
+): MonthlyAveragesForPdf => {
+  const workingEntries = entries.filter((entry) => !entry.isHoliday);
+  const workingDaysCount = workingEntries.length;
+
+  const totals = workingEntries.reduce<AverageTotals>(
+    (acc, entry) => {
+      acc.salesCount += entry.salesCount ?? 0;
+      acc.cash += entry.cash ?? 0;
+      acc.phonePe += entry.phonePe ?? 0;
+      acc.total += entry.total ?? 0;
+      acc.expense += entry.expense ?? 0;
+      acc.profit += entry.profit ?? 0;
+
+      return acc;
+    },
+    {
+      salesCount: 0,
+      cash: 0,
+      phonePe: 0,
+      total: 0,
+      expense: 0,
+      profit: 0,
+    },
+  );
+
+  return {
+    workingDaysCount,
+    salesCount: getAverageForPdf(totals.salesCount, workingDaysCount),
+    cash: getAverageForPdf(totals.cash, workingDaysCount),
+    phonePe: getAverageForPdf(totals.phonePe, workingDaysCount),
+    total: getAverageForPdf(totals.total, workingDaysCount),
+    expense: getAverageForPdf(totals.expense, workingDaysCount),
+    profit: getAverageForPdf(totals.profit, workingDaysCount),
+  };
+};
+
 const drawTableRow = (
   doc: PDFKit.PDFDocument,
   y: number,
@@ -123,6 +192,136 @@ const drawTableRow = (
     .strokeColor("#e5e7eb")
     .lineWidth(0.5)
     .stroke();
+};
+
+const drawAverageSection = (
+  doc: PDFKit.PDFDocument,
+  y: number,
+  averages: {
+    workingDaysCount: number;
+    salesCount: number;
+    cash: number;
+    phonePe: number;
+    total: number;
+    expense: number;
+    profit: number;
+  },
+) => {
+  const startX = 40;
+  const sectionWidth = doc.page.width - 80;
+
+  const sectionPadding = 10;
+  const gap = 8;
+
+  const headingHeight = 38;
+  const cardHeight = 38;
+
+  const sectionHeight =
+    sectionPadding +
+    headingHeight +
+    gap +
+    cardHeight +
+    gap +
+    cardHeight +
+    sectionPadding;
+
+  const innerWidth = sectionWidth - sectionPadding * 2;
+  const cardWidth = (innerWidth - gap * 2) / 3;
+
+  doc
+    .roundedRect(startX, y, sectionWidth, sectionHeight, 10)
+    .fillAndStroke("#f8fbff", "#bfdbfe");
+
+  // Title row
+  doc
+    .roundedRect(
+      startX + sectionPadding,
+      y + sectionPadding,
+      innerWidth,
+      headingHeight,
+      8,
+    )
+    .fill("#eff6ff");
+
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(9)
+    .fillColor("#16a34a")
+    .text(
+      "Daily Averages",
+      startX + sectionPadding + 10,
+      y + sectionPadding + 8,
+      {
+        width: innerWidth - 20,
+        lineBreak: false,
+      },
+    );
+
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(7)
+    .fillColor("#64748b")
+    .text(
+      `Based on ${averages.workingDaysCount} working days`,
+      startX + sectionPadding + 10,
+      y + sectionPadding + 22,
+      {
+        width: innerWidth - 20,
+        lineBreak: false,
+      },
+    );
+
+  const averageItems = [
+    ["Avg Sales", String(averages.salesCount)],
+    ["Avg Cash", formatMoneyForPdf(averages.cash)],
+    ["Avg PhonePe", formatMoneyForPdf(averages.phonePe)],
+    ["Avg Total", formatMoneyForPdf(averages.total)],
+    ["Avg Expense", formatMoneyForPdf(averages.expense)],
+    ["Avg Profit", formatMoneyForPdf(averages.profit)],
+  ] as const;
+
+  const firstCardRowY = y + sectionPadding + headingHeight + gap;
+  const secondCardRowY = firstCardRowY + cardHeight + gap;
+
+  averageItems.forEach(([label, value], index) => {
+    const row = Math.floor(index / 3);
+    const column = index % 3;
+
+    const x = startX + sectionPadding + column * (cardWidth + gap);
+    const cardY = row === 0 ? firstCardRowY : secondCardRowY;
+
+    doc
+      .roundedRect(x, cardY, cardWidth, cardHeight, 8)
+      .fillAndStroke("#ffffff", "#e2e8f0");
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(7)
+      .fillColor("#475569")
+      .text(label, x + 8, cardY + 8, {
+        width: cardWidth - 16,
+        align: "center",
+        lineBreak: false,
+      });
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(10)
+      .fillColor(
+        label === "Avg Profit" && averages.profit < 0
+          ? "#dc2626"
+          : label === "Avg Profit"
+            ? "#16a34a"
+            : "#111827",
+      )
+      .text(value, x + 8, cardY + 21, {
+        width: cardWidth - 16,
+        align: "center",
+        lineBreak: false,
+      });
+  });
+
+  return y + sectionHeight + 22;
 };
 
 const drawPdfFooter = (doc: PDFKit.PDFDocument) => {
@@ -356,6 +555,8 @@ export const downloadMonthlyEntriesPdf = async (
     },
   );
 
+  const averages = calculateMonthlyAveragesForPdf(entries);
+
   const monthName = getMonthName(month);
   const fileName = `sale-ledger-${monthName}-${year}-report.pdf`;
 
@@ -439,9 +640,11 @@ export const downloadMonthlyEntriesPdf = async (
     .fillColor("#111827")
     .text("Sales Report");
 
-  doc.moveDown(0.5);
-
   doc.moveDown(0.6);
+
+  let y = doc.y;
+
+  y = drawAverageSection(doc, y, averages);
 
   const headers = [
     "Date",
@@ -453,8 +656,6 @@ export const downloadMonthlyEntriesPdf = async (
     "Profit",
     "Note",
   ];
-
-  let y = doc.y;
 
   drawTableRow(doc, y, headers, {
     bold: true,

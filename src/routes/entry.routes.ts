@@ -6,6 +6,7 @@ import {
   getEntries,
   getEntryById,
   getMonthlySummary,
+  getYearlySummary,
   updateEntry,
 } from "../controllers/entry.controller";
 import { protect } from "../middlewares/auth.middleware";
@@ -17,6 +18,7 @@ router.use(protect);
 router.get("/", getEntries);
 router.post("/", createEntry);
 router.get("/summary/monthly", getMonthlySummary);
+router.get("/summary/yearly", getYearlySummary);
 router.get("/report/pdf", downloadMonthlyEntriesPdf);
 router.get("/:id", getEntryById);
 router.put("/:id", updateEntry);

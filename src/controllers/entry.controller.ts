@@ -4,6 +4,20 @@ import { Request, Response } from "express";
 import { z } from "zod";
 import { Entry } from "../models/Entry.model";
 
+type SummaryTotals = {
+  totalSales: number;
+  totalCash: number;
+  totalPhonePe: number;
+  totalCollection: number;
+  totalExpense: number;
+  totalProfit: number;
+};
+
+type YearlyMonthSummary = SummaryTotals & {
+  month: number;
+  monthName: string;
+};
+
 const entrySchema = z.object({
   date: z.string().min(1, "Date is required"),
   salesCount: z.number().int().nonnegative().default(0),
@@ -506,4 +520,134 @@ export const downloadMonthlyEntriesPdf = async (
   drawPdfFooter(doc);
 
   doc.end();
+};
+
+const getYearRange = (year: number) => {
+  const startDate = new Date(Date.UTC(year, 0, 1));
+  const endDate = new Date(Date.UTC(year + 1, 0, 1));
+
+  const start = startDate.toISOString().slice(0, 10);
+  const end = endDate.toISOString().slice(0, 10);
+
+  return { start, end };
+};
+
+const getEmptySummary = (): SummaryTotals => ({
+  totalSales: 0,
+  totalCash: 0,
+  totalPhonePe: 0,
+  totalCollection: 0,
+  totalExpense: 0,
+  totalProfit: 0,
+});
+
+const buildYearlyRows = (
+  groupedRows: Array<{
+    _id: number;
+    totalSales: number;
+    totalCash: number;
+    totalPhonePe: number;
+    totalCollection: number;
+    totalExpense: number;
+    totalProfit: number;
+  }>,
+): YearlyMonthSummary[] => {
+  const groupedMap = new Map(groupedRows.map((row) => [row._id, row]));
+
+  return Array.from({ length: 12 }, (_, index) => {
+    const month = index + 1;
+    const row = groupedMap.get(month);
+
+    return {
+      month,
+      monthName: getMonthName(month),
+      totalSales: row?.totalSales ?? 0,
+      totalCash: row?.totalCash ?? 0,
+      totalPhonePe: row?.totalPhonePe ?? 0,
+      totalCollection: row?.totalCollection ?? 0,
+      totalExpense: row?.totalExpense ?? 0,
+      totalProfit: row?.totalProfit ?? 0,
+    };
+  });
+};
+
+const calculateSummaryFromYearlyRows = (
+  rows: YearlyMonthSummary[],
+): SummaryTotals => {
+  return rows.reduce((acc, row) => {
+    acc.totalSales += row.totalSales;
+    acc.totalCash += row.totalCash;
+    acc.totalPhonePe += row.totalPhonePe;
+    acc.totalCollection += row.totalCollection;
+    acc.totalExpense += row.totalExpense;
+    acc.totalProfit += row.totalProfit;
+
+    return acc;
+  }, getEmptySummary());
+};
+
+export const getYearlySummary = async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  const year = Number(req.query.year);
+
+  if (!year) {
+    res.status(400).json({
+      message: "year query param is required",
+    });
+    return;
+  }
+
+  const { start, end } = getYearRange(year);
+
+  const groupedRows = await Entry.aggregate([
+    {
+      $match: {
+        userId: new mongoose.Types.ObjectId(userId),
+        date: {
+          $gte: start,
+          $lt: end,
+        },
+      },
+    },
+    {
+      $project: {
+        month: {
+          $toInt: {
+            $substr: ["$date", 5, 2],
+          },
+        },
+        salesCount: 1,
+        cash: 1,
+        phonePe: 1,
+        total: 1,
+        expense: 1,
+        profit: 1,
+      },
+    },
+    {
+      $group: {
+        _id: "$month",
+        totalSales: { $sum: "$salesCount" },
+        totalCash: { $sum: "$cash" },
+        totalPhonePe: { $sum: "$phonePe" },
+        totalCollection: { $sum: "$total" },
+        totalExpense: { $sum: "$expense" },
+        totalProfit: { $sum: "$profit" },
+      },
+    },
+    {
+      $sort: {
+        _id: 1,
+      },
+    },
+  ]);
+
+  const months = buildYearlyRows(groupedRows);
+  const summary = calculateSummaryFromYearlyRows(months);
+
+  res.json({
+    year,
+    summary,
+    months,
+  });
 };

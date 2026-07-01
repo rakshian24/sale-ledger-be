@@ -5,6 +5,7 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import authRoutes from "./routes/auth.routes";
 import entryRoutes from "./routes/entry.routes";
+import fixedMonthlyExpenseRoutes from "./routes/fixedMonthlyExpense.routes";
 import { connectDB } from "./config/db";
 import {
   errorMiddleware,
@@ -67,6 +68,7 @@ app.use(async (_req, _res, next) => {
 
 app.use("/api/auth", authRoutes);
 app.use("/api/entries", entryRoutes);
+app.use("/api/fixed-expenses", fixedMonthlyExpenseRoutes);
 
 app.use(notFoundMiddleware);
 app.use(errorMiddleware);

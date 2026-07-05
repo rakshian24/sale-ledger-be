@@ -3,6 +3,7 @@ import PDFDocument from "pdfkit";
 import { Request, Response } from "express";
 import { z } from "zod";
 import { Entry } from "../models/Entry.model";
+import { FixedMonthlyExpense } from "../models/FixedMonthlyExpense.model";
 
 type SummaryTotals = {
   totalSales: number;
@@ -40,6 +41,23 @@ type AverageTotals = {
 type MonthlyAveragesForPdf = AverageTotals & {
   workingDaysCount: number;
 };
+
+type FixedExpensePdfData = {
+  shopRent: number;
+  shopkeeperSalary: number;
+  electricityBill: number;
+  totalFixedExpense: number;
+};
+
+const DEFAULT_FIXED_EXPENSE: FixedExpensePdfData = {
+  shopRent: 5000,
+  shopkeeperSalary: 10000,
+  electricityBill: 0,
+  totalFixedExpense: 15000,
+};
+
+const PDF_PAGE_START_Y = 50;
+const PDF_FOOTER_RESERVED_HEIGHT = 42;
 
 const entrySchema = z.object({
   date: z.string().min(1, "Date is required"),
@@ -153,19 +171,20 @@ const drawTableRow = (
 ) => {
   const startX = 40;
 
-  const columnWidths = [76, 44, 78, 78, 78, 78, 78, 110];
+  /*
+   * Reduced Date width from 76 to 62.
+   * The remaining width is redistributed across the numeric and Note columns.
+   *
+   * Total width remains 620 points.
+   */
+  const columnWidths = [62, 48, 80, 80, 80, 80, 80, 110];
+
+  const tableWidth = columnWidths.reduce((sum, width) => sum + width, 0);
 
   let currentX = startX;
 
   if (options?.fillColor) {
-    doc
-      .rect(
-        startX,
-        y - 6,
-        columnWidths.reduce((sum, width) => sum + width, 0),
-        26,
-      )
-      .fill(options.fillColor);
+    doc.rect(startX, y - 6, tableWidth, 26).fill(options.fillColor);
   }
 
   doc
@@ -178,6 +197,7 @@ const drawTableRow = (
       width: columnWidths[index] - 8,
       align: index === 0 || index === 7 ? "left" : "right",
       lineBreak: false,
+      ellipsis: true,
     });
 
     currentX += columnWidths[index];
@@ -185,10 +205,7 @@ const drawTableRow = (
 
   doc
     .moveTo(startX, y + 20)
-    .lineTo(
-      startX + columnWidths.reduce((sum, width) => sum + width, 0),
-      y + 20,
-    )
+    .lineTo(startX + tableWidth, y + 20)
     .strokeColor("#e5e7eb")
     .lineWidth(0.5)
     .stroke();
@@ -322,6 +339,381 @@ const drawAverageSection = (
   });
 
   return y + sectionHeight + 22;
+};
+
+const getPdfContentBottom = (doc: PDFKit.PDFDocument) => {
+  return doc.page.height - doc.page.margins.bottom - PDF_FOOTER_RESERVED_HEIGHT;
+};
+
+const ensurePdfSpace = (
+  doc: PDFKit.PDFDocument,
+  y: number,
+  requiredHeight: number,
+) => {
+  const contentBottom = getPdfContentBottom(doc);
+
+  if (y + requiredHeight <= contentBottom) {
+    return y;
+  }
+
+  doc.addPage();
+
+  return PDF_PAGE_START_Y;
+};
+
+const drawSummarySection = (
+  doc: PDFKit.PDFDocument,
+  y: number,
+  data: {
+    totals: {
+      salesCount: number;
+      cash: number;
+      phonePe: number;
+      total: number;
+      expense: number;
+      profit: number;
+    };
+    fixedExpense: FixedExpensePdfData;
+    netProfit: number;
+  },
+) => {
+  const startX = 40;
+  const sectionWidth = doc.page.width - 80;
+
+  const columns = 4;
+  const gap = 8;
+  const cardHeight = 44;
+  const cardWidth = (sectionWidth - gap * (columns - 1)) / columns;
+
+  const items = [
+    {
+      label: "Total Sales",
+      value: String(data.totals.salesCount),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+    },
+    {
+      label: "Total Cash",
+      value: formatMoneyForPdf(data.totals.cash),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+    },
+    {
+      label: "Total PhonePe",
+      value: formatMoneyForPdf(data.totals.phonePe),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+    },
+    {
+      label: "Total Collection",
+      value: formatMoneyForPdf(data.totals.total),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+    },
+    {
+      label: "Total Expense",
+      value: formatMoneyForPdf(data.totals.expense),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+    },
+    {
+      label: "Fixed Monthly Expenses",
+      value: formatMoneyForPdf(data.fixedExpense.totalFixedExpense),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+      meta: `Rent ${formatMoneyForPdf(
+        data.fixedExpense.shopRent,
+      )} • Salary ${formatMoneyForPdf(
+        data.fixedExpense.shopkeeperSalary,
+      )} • EB ${formatMoneyForPdf(data.fixedExpense.electricityBill)}`,
+    },
+    {
+      label: "Sales Profit",
+      value: formatMoneyForPdf(data.totals.profit),
+      background: data.totals.profit >= 0 ? "#f0fdf4" : "#fef2f2",
+      border: data.totals.profit >= 0 ? "#86efac" : "#fca5a5",
+      valueColor: data.totals.profit >= 0 ? "#16a34a" : "#dc2626",
+    },
+    {
+      label: "Net Profit After Fixed Expenses",
+      value: formatMoneyForPdf(data.netProfit),
+      background: data.netProfit >= 0 ? "#f0fdf4" : "#fef2f2",
+      border: data.netProfit >= 0 ? "#86efac" : "#fca5a5",
+      valueColor: data.netProfit >= 0 ? "#16a34a" : "#dc2626",
+    },
+  ];
+
+  items.forEach((item, index) => {
+    const row = Math.floor(index / columns);
+    const column = index % columns;
+
+    const x = startX + column * (cardWidth + gap);
+    const cardY = y + row * (cardHeight + gap);
+
+    doc
+      .roundedRect(x, cardY, cardWidth, cardHeight, 8)
+      .fillAndStroke(item.background, item.border);
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(6.7)
+      .fillColor("#64748b")
+      .text(item.label, x + 8, cardY + 7, {
+        width: cardWidth - 16,
+        lineBreak: false,
+        ellipsis: true,
+      });
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(9.5)
+      .fillColor(item.valueColor)
+      .text(item.value, x + 8, cardY + 21, {
+        width: cardWidth - 16,
+        lineBreak: false,
+        ellipsis: true,
+      });
+
+    if (item.meta) {
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(4.6)
+        .fillColor("#64748b")
+        .text(item.meta, x + 8, cardY + 34, {
+          width: cardWidth - 16,
+          lineBreak: false,
+          ellipsis: true,
+        });
+    }
+  });
+
+  return y + cardHeight * 2 + gap + 20;
+};
+
+const drawFixedExpenseSection = (
+  doc: PDFKit.PDFDocument,
+  y: number,
+  fixedExpense: FixedExpensePdfData,
+) => {
+  const startX = 40;
+  const sectionWidth = doc.page.width - 80;
+  const sectionHeight = 72;
+
+  const horizontalPadding = 14;
+  const titleY = y + 10;
+  const itemsY = y + 36;
+
+  doc
+    .roundedRect(startX, y, sectionWidth, sectionHeight, 10)
+    .fillAndStroke("#f0fdf4", "#86efac");
+
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(9)
+    .fillColor("#16a34a")
+    .text(
+      "Fixed Expenses (Monthly Breakdown)",
+      startX + horizontalPadding,
+      titleY,
+      {
+        width: sectionWidth - horizontalPadding * 2,
+        lineBreak: false,
+      },
+    );
+
+  const items = [
+    {
+      label: "Rent",
+      value: fixedExpense.shopRent,
+      isTotal: false,
+    },
+    {
+      label: "Salary",
+      value: fixedExpense.shopkeeperSalary,
+      isTotal: false,
+    },
+    {
+      label: "Electricity",
+      value: fixedExpense.electricityBill,
+      isTotal: false,
+    },
+    {
+      label: "Total",
+      value: fixedExpense.totalFixedExpense,
+      isTotal: true,
+    },
+  ];
+
+  const innerWidth = sectionWidth - horizontalPadding * 2;
+  const itemWidth = innerWidth / items.length;
+
+  items.forEach((item, index) => {
+    const itemX = startX + horizontalPadding + index * itemWidth;
+
+    /*
+     * Divider before Total.
+     */
+    if (index === items.length - 1) {
+      doc
+        .moveTo(itemX, itemsY - 4)
+        .lineTo(itemX, y + sectionHeight - 10)
+        .strokeColor("#94a3b8")
+        .lineWidth(0.5)
+        .stroke();
+    }
+
+    const textX = itemX + (item.isTotal ? 16 : 8);
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(7)
+      .fillColor("#475569")
+      .text(item.label, textX, itemsY, {
+        width: itemWidth - 20,
+        lineBreak: false,
+      });
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(9.5)
+      .fillColor(item.isTotal ? "#16a34a" : "#111827")
+      .text(formatMoneyForPdf(item.value), textX, itemsY + 14, {
+        width: itemWidth - 20,
+        lineBreak: false,
+      });
+  });
+
+  return y + sectionHeight + 22;
+};
+
+const drawBusinessSummarySection = (
+  doc: PDFKit.PDFDocument,
+  y: number,
+  data: {
+    salesProfit: number;
+    fixedExpense: number;
+    netProfit: number;
+  },
+) => {
+  const startX = 40;
+  const sectionWidth = doc.page.width - 80;
+
+  const sectionPadding = 12;
+  const headingHeight = 18;
+  const gap = 10;
+  const cardHeight = 88;
+
+  const cardWidth = (sectionWidth - sectionPadding * 2 - gap * 2) / 3;
+
+  const sectionHeight =
+    sectionPadding + headingHeight + 8 + cardHeight + sectionPadding;
+
+  doc
+    .roundedRect(startX, y, sectionWidth, sectionHeight, 10)
+    .fillAndStroke("#ffffff", "#e2e8f0");
+
+  // Section heading
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(9)
+    .fillColor("#334155")
+    .text(
+      "BUSINESS SUMMARY AFTER FIXED EXPENSES",
+      startX + sectionPadding,
+      y + sectionPadding,
+      {
+        width: sectionWidth - sectionPadding * 2,
+        characterSpacing: 0.35,
+        lineBreak: false,
+      },
+    );
+
+  const cards = [
+    {
+      title: "Sales Profit\n(All Entries)",
+      value: data.salesProfit,
+      description: "Sum of Sales Profit\ncolumn above",
+      background: "#f0fdf4",
+      border: "#86efac",
+      color: data.salesProfit >= 0 ? "#16a34a" : "#dc2626",
+    },
+    {
+      title: "Fixed Monthly\nExpense",
+      value: data.fixedExpense,
+      description: "Rent + Salary +\nElectricity",
+      background: "#f8fbff",
+      border: "#bfdbfe",
+      color: "#334155",
+    },
+    {
+      title: "Net Profit After\nFixed Expenses",
+      value: data.netProfit,
+      description: "Sales Profit - Fixed\nMonthly Expense",
+      background: data.netProfit >= 0 ? "#f0fdf4" : "#fef2f2",
+      border: data.netProfit >= 0 ? "#86efac" : "#fca5a5",
+      color: data.netProfit >= 0 ? "#16a34a" : "#dc2626",
+    },
+  ];
+
+  const cardsY = y + sectionPadding + headingHeight + 8;
+
+  cards.forEach((card, index) => {
+    const cardX = startX + sectionPadding + index * (cardWidth + gap);
+
+    const contentX = cardX + 14;
+    const contentWidth = cardWidth - 28;
+
+    doc
+      .roundedRect(cardX, cardsY, cardWidth, cardHeight, 9)
+      .fillAndStroke(card.background, card.border);
+
+    // Card title
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(7.5)
+      .fillColor(card.color)
+      .text(card.title, contentX, cardsY + 11, {
+        width: contentWidth,
+        lineGap: 0.5,
+      });
+
+    // Amount
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(11.5)
+      .fillColor(card.color)
+      .text(formatMoneyForPdf(card.value), contentX, cardsY + 39, {
+        width: contentWidth,
+        lineBreak: false,
+        ellipsis: true,
+      });
+
+    // Divider
+    doc
+      .moveTo(contentX, cardsY + 59)
+      .lineTo(cardX + cardWidth - 14, cardsY + 59)
+      .strokeColor(card.color)
+      .lineWidth(0.5)
+      .stroke();
+
+    // Description
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(6.5)
+      .fillColor("#475569")
+      .text(card.description, contentX, cardsY + 67, {
+        width: contentWidth,
+        lineGap: 0.5,
+      });
+  });
+
+  return y + sectionHeight + 18;
 };
 
 const drawPdfFooter = (doc: PDFKit.PDFDocument) => {
@@ -536,13 +928,21 @@ export const downloadMonthlyEntriesPdf = async (
 
   const { start, end } = getMonthRange(month, year);
 
-  const entries = await Entry.find({
-    userId,
-    date: {
-      $gte: start,
-      $lt: end,
-    },
-  }).sort({ date: 1 });
+  const [entries, savedFixedExpense] = await Promise.all([
+    Entry.find({
+      userId,
+      date: {
+        $gte: start,
+        $lt: end,
+      },
+    }).sort({ date: 1 }),
+
+    FixedMonthlyExpense.findOne({
+      userId,
+      month,
+      year,
+    }).lean(),
+  ]);
 
   if (entries.length === 0) {
     res.status(404).json({
@@ -572,6 +972,35 @@ export const downloadMonthlyEntriesPdf = async (
     },
   );
 
+  const shopRent = Number(
+    savedFixedExpense?.shopRent ?? DEFAULT_FIXED_EXPENSE.shopRent,
+  );
+
+  const shopkeeperSalary = Number(
+    savedFixedExpense?.shopkeeperSalary ??
+      DEFAULT_FIXED_EXPENSE.shopkeeperSalary,
+  );
+
+  const electricityBill = Number(
+    savedFixedExpense?.electricityBill ?? DEFAULT_FIXED_EXPENSE.electricityBill,
+  );
+
+  const calculatedFixedExpenseTotal =
+    shopRent + shopkeeperSalary + electricityBill;
+
+  const totalFixedExpense = Number(
+    savedFixedExpense?.totalFixedExpense ?? calculatedFixedExpenseTotal,
+  );
+
+  const fixedExpense: FixedExpensePdfData = {
+    shopRent,
+    shopkeeperSalary,
+    electricityBill,
+    totalFixedExpense,
+  };
+
+  const netProfit = totals.profit - fixedExpense.totalFixedExpense;
+
   const averages = calculateMonthlyAveragesForPdf(entries);
 
   const monthName = getMonthName(month);
@@ -592,7 +1021,7 @@ export const downloadMonthlyEntriesPdf = async (
     .font("Helvetica-Bold")
     .fontSize(18)
     .fillColor("#111827")
-    .text(`Sale Ledger Monthly Report`, {
+    .text("Sale Ledger Monthly Report", {
       align: "center",
     });
 
@@ -611,57 +1040,32 @@ export const downloadMonthlyEntriesPdf = async (
 
   doc.moveDown(0.5);
 
-  const summaryY = doc.y;
+  let y = doc.y;
 
-  const summaryItems = [
-    ["Total Sales", String(totals.salesCount)],
-    ["Total Cash", formatMoneyForPdf(totals.cash)],
-    ["Total PhonePe", formatMoneyForPdf(totals.phonePe)],
-    ["Total Collection", formatMoneyForPdf(totals.total)],
-    ["Total Expense", formatMoneyForPdf(totals.expense)],
-    ["Total Profit", formatMoneyForPdf(totals.profit)],
-  ];
-
-  summaryItems.forEach((item, index) => {
-    const x = 40 + (index % 3) * 170;
-    const y = summaryY + Math.floor(index / 3) * 44;
-
-    doc.roundedRect(x, y, 155, 34, 8).fillAndStroke("#f8fafc", "#e2e8f0");
-
-    doc
-      .font("Helvetica")
-      .fontSize(7)
-      .fillColor("#64748b")
-      .text(item[0], x + 10, y + 6, {
-        width: 135,
-      });
-
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(9)
-      .fillColor(
-        item[0] === "Total Profit" && totals.profit < 0 ? "#dc2626" : "#111827",
-      )
-      .text(item[1], x + 10, y + 18, {
-        width: 135,
-      });
+  y = drawSummarySection(doc, y, {
+    totals,
+    fixedExpense,
+    netProfit,
   });
 
-  doc.y = summaryY + 96;
-
-  doc.x = 42;
+  doc.x = 40;
 
   doc
     .font("Helvetica-Bold")
     .fontSize(12)
     .fillColor("#111827")
-    .text("Sales Report");
+    .text("Sales Report", 40, y);
 
-  doc.moveDown(0.6);
-
-  let y = doc.y;
+  y += 24;
 
   y = drawAverageSection(doc, y, averages);
+
+  /*
+   * Draw the fixed-expense breakdown directly below Daily Averages.
+   */
+  y = ensurePdfSpace(doc, y, 100);
+
+  y = drawFixedExpenseSection(doc, y, fixedExpense);
 
   const headers = [
     "Date",
@@ -674,6 +1078,8 @@ export const downloadMonthlyEntriesPdf = async (
     "Note",
   ];
 
+  y = ensurePdfSpace(doc, y, 50);
+
   drawTableRow(doc, y, headers, {
     bold: true,
     fillColor: "#f1f5f9",
@@ -683,9 +1089,11 @@ export const downloadMonthlyEntriesPdf = async (
   y += 24;
 
   entries.forEach((entry) => {
-    if (y > 740) {
+    const nextRowWouldOverflow = y + 24 > getPdfContentBottom(doc);
+
+    if (nextRowWouldOverflow) {
       doc.addPage();
-      y = 50;
+      y = PDF_PAGE_START_Y;
 
       drawTableRow(doc, y, headers, {
         bold: true,
@@ -710,10 +1118,10 @@ export const downloadMonthlyEntriesPdf = async (
     y += 24;
   });
 
-  if (y > 730) {
-    doc.addPage();
-    y = 50;
-  }
+  /*
+   * Reserve space for the totals row.
+   */
+  y = ensurePdfSpace(doc, y, 32);
 
   drawTableRow(
     doc,
@@ -734,6 +1142,20 @@ export const downloadMonthlyEntriesPdf = async (
       textColor: "#111827",
     },
   );
+
+  y += 42;
+
+  /*
+   * The business summary requires approximately 180 points.
+   * When sufficient room is unavailable, it starts on a clean new page.
+   */
+  y = ensurePdfSpace(doc, y, 180);
+
+  drawBusinessSummarySection(doc, y, {
+    salesProfit: totals.profit,
+    fixedExpense: fixedExpense.totalFixedExpense,
+    netProfit,
+  });
 
   drawPdfFooter(doc);
 

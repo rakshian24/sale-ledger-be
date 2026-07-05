@@ -55,6 +55,7 @@ type PdfTableRowOptions = {
   textColor?: string;
   isHeader?: boolean;
   minimumHeight?: number;
+  isHoliday?: boolean;
 };
 
 const DEFAULT_FIXED_EXPENSE: FixedExpensePdfData = {
@@ -234,7 +235,27 @@ const getPdfTableRowHeight = (
     const columnWidth = PDF_TABLE_COLUMN_WIDTHS[index];
     const availableWidth = columnWidth - horizontalPadding;
 
+    const isDateColumn = index === 0;
     const isNoteColumn = index === 7;
+
+    /*
+     * A holiday date cell contains:
+     * 1. The date
+     * 2. A small gap
+     * 3. The Holiday badge
+     */
+    if (isDateColumn && options.isHoliday) {
+      const dateHeight = doc.heightOfString(cell, {
+        width: availableWidth,
+        align: "left",
+        lineBreak: false,
+      });
+
+      const badgeHeight = 11;
+      const badgeGap = 4;
+
+      return dateHeight + badgeGap + badgeHeight;
+    }
 
     if (isNoteColumn) {
       return doc.heightOfString(cell, {
@@ -246,7 +267,7 @@ const getPdfTableRowHeight = (
 
     return doc.heightOfString(cell, {
       width: availableWidth,
-      align: index === 0 ? "left" : "right",
+      align: isDateColumn ? "left" : "right",
       lineBreak: false,
     });
   });
@@ -272,17 +293,21 @@ const drawTableRow = (
 
   const fontName = options.bold ? "Helvetica-Bold" : "Helvetica";
   const fontSize = options.isHeader ? 7.3 : 8;
+  const defaultTextColor = options.textColor || "#111827";
 
-  if (options.fillColor) {
+  /*
+   * Holiday rows use a light-yellow background.
+   * An explicit fillColor still applies to headers and totals.
+   */
+  const rowFillColor = options.isHoliday ? "#fefce8" : options.fillColor;
+
+  if (rowFillColor) {
     doc
       .rect(PDF_TABLE_START_X, y, PDF_TABLE_WIDTH, rowHeight)
-      .fill(options.fillColor);
+      .fill(rowFillColor);
   }
 
-  doc
-    .font(fontName)
-    .fontSize(fontSize)
-    .fillColor(options.textColor || "#111827");
+  doc.font(fontName).fontSize(fontSize).fillColor(defaultTextColor);
 
   let currentX = PDF_TABLE_START_X;
 
@@ -294,7 +319,61 @@ const drawTableRow = (
     const isDateColumn = index === 0;
     const isNoteColumn = index === 7;
 
-    const alignment = isDateColumn || isNoteColumn ? "left" : "right";
+    /*
+     * Holiday date cell:
+     *
+     * 01 Jan 2026
+     * Holiday
+     */
+    if (isDateColumn && options.isHoliday) {
+      const dateHeight = doc.heightOfString(cell, {
+        width: cellWidth,
+        align: "left",
+        lineBreak: false,
+      });
+
+      const contentHeight = dateHeight + 4 + 11;
+      const contentStartY = y + Math.max(5, (rowHeight - contentHeight) / 2);
+
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(fontSize)
+        .fillColor("#111827")
+        .text(cell, currentX + 4, contentStartY, {
+          width: cellWidth,
+          align: "left",
+          lineBreak: false,
+          ellipsis: true,
+        });
+
+      const badgeText = "Holiday";
+      const badgeX = currentX + 4;
+      const badgeY = contentStartY + dateHeight + 4;
+      const badgeWidth = 34;
+      const badgeHeight = 11;
+
+      doc
+        .roundedRect(badgeX, badgeY, badgeWidth, badgeHeight, badgeHeight / 2)
+        .fill("#facc15");
+
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(5.8)
+        .fillColor("#713f12")
+        .text(badgeText, badgeX, badgeY + 2.1, {
+          width: badgeWidth,
+          align: "center",
+          lineBreak: false,
+        });
+
+      /*
+       * Reset font and text colour before drawing the next cell.
+       */
+      doc.font(fontName).fontSize(fontSize).fillColor(defaultTextColor);
+
+      currentX += columnWidth;
+      return;
+    }
 
     if (isNoteColumn) {
       const noteHeight = doc.heightOfString(cell, {
@@ -305,12 +384,18 @@ const drawTableRow = (
 
       const noteY = y + Math.max(6, (rowHeight - noteHeight) / 2);
 
-      doc.text(cell, currentX + 4, noteY, {
-        width: cellWidth,
-        align: "left",
-        lineGap: 1.5,
-      });
+      doc
+        .font(fontName)
+        .fontSize(fontSize)
+        .fillColor(defaultTextColor)
+        .text(cell, currentX + 4, noteY, {
+          width: cellWidth,
+          align: "left",
+          lineGap: 1.5,
+        });
     } else {
+      const alignment = isDateColumn ? "left" : "right";
+
       const textHeight = doc.heightOfString(cell, {
         width: cellWidth,
         align: alignment,
@@ -319,12 +404,16 @@ const drawTableRow = (
 
       const textY = y + Math.max(5, (rowHeight - textHeight) / 2);
 
-      doc.text(cell, currentX + 4, textY, {
-        width: cellWidth,
-        align: alignment,
-        lineBreak: false,
-        ellipsis: true,
-      });
+      doc
+        .font(fontName)
+        .fontSize(fontSize)
+        .fillColor(defaultTextColor)
+        .text(cell, currentX + 4, textY, {
+          width: cellWidth,
+          align: alignment,
+          lineBreak: false,
+          ellipsis: true,
+        });
     }
 
     currentX += columnWidth;
@@ -333,7 +422,7 @@ const drawTableRow = (
   doc
     .moveTo(PDF_TABLE_START_X, y + rowHeight)
     .lineTo(PDF_TABLE_START_X + PDF_TABLE_WIDTH, y + rowHeight)
-    .strokeColor("#e5e7eb")
+    .strokeColor(options.isHoliday ? "#fde68a" : "#e5e7eb")
     .lineWidth(0.5)
     .stroke();
 
@@ -1223,6 +1312,7 @@ export const downloadMonthlyEntriesPdf = async (
 
     const requiredRowHeight = getPdfTableRowHeight(doc, tableRow, {
       minimumHeight: 24,
+      isHoliday: entry.isHoliday,
     });
 
     if (y + requiredRowHeight > getPdfContentBottom(doc)) {
@@ -1234,6 +1324,7 @@ export const downloadMonthlyEntriesPdf = async (
 
     const actualRowHeight = drawTableRow(doc, y, tableRow, {
       minimumHeight: 24,
+      isHoliday: entry.isHoliday,
     });
 
     y += actualRowHeight;

@@ -14,11 +14,6 @@ type SummaryTotals = {
   totalProfit: number;
 };
 
-type YearlyMonthSummary = SummaryTotals & {
-  month: number;
-  monthName: string;
-};
-
 type AverageEntry = {
   salesCount?: number;
   cash?: number;
@@ -56,6 +51,8 @@ type PdfTableRowOptions = {
   isHeader?: boolean;
   minimumHeight?: number;
   isHoliday?: boolean;
+  weekdayName?: string;
+  weekendDay?: "Saturday" | "Sunday" | null;
 };
 
 const DEFAULT_FIXED_EXPENSE: FixedExpensePdfData = {
@@ -159,6 +156,57 @@ const formatDateForPdf = (date: string) => {
   }).format(new Date(date));
 };
 
+type PdfWeekdayInfo = {
+  weekdayName: string;
+  weekendDay: "Saturday" | "Sunday" | null;
+};
+
+const getPdfWeekdayInfo = (date: string): PdfWeekdayInfo => {
+  const dateOnlyMatch = date.match(/^(\d{4})-(\d{2})-(\d{2})/);
+
+  let parsedDate: Date;
+
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch;
+
+    parsedDate = new Date(
+      Date.UTC(Number(year), Number(month) - 1, Number(day)),
+    );
+  } else {
+    parsedDate = new Date(date);
+  }
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return {
+      weekdayName: "",
+      weekendDay: null,
+    };
+  }
+
+  const fullWeekdayName = new Intl.DateTimeFormat("en-IN", {
+    weekday: "long",
+    timeZone: "UTC",
+  }).format(parsedDate);
+
+  const shortWeekdayName = new Intl.DateTimeFormat("en-IN", {
+    weekday: "short",
+    timeZone: "UTC",
+  }).format(parsedDate);
+
+  let weekendDay: "Saturday" | "Sunday" | null = null;
+
+  if (fullWeekdayName === "Saturday") {
+    weekendDay = "Saturday";
+  } else if (fullWeekdayName === "Sunday") {
+    weekendDay = "Sunday";
+  }
+
+  return {
+    weekdayName: shortWeekdayName,
+    weekendDay,
+  };
+};
+
 const formatMoneyForPdf = (value: number) => {
   return `Rs. ${new Intl.NumberFormat("en-IN", {
     maximumFractionDigits: 0,
@@ -239,22 +287,42 @@ const getPdfTableRowHeight = (
     const isNoteColumn = index === 7;
 
     /*
-     * A holiday date cell contains:
-     * 1. The date
-     * 2. A small gap
-     * 3. The Holiday badge
+     * Date cell layout:
+     *
+     * 01 Jan 2026
+     * Mon
+     * Holiday        // only for holiday rows
      */
-    if (isDateColumn && options.isHoliday) {
+    if (isDateColumn && !options.isHeader) {
       const dateHeight = doc.heightOfString(cell, {
         width: availableWidth,
         align: "left",
         lineBreak: false,
       });
 
-      const badgeHeight = 11;
-      const badgeGap = 4;
+      doc.font("Helvetica-Bold").fontSize(6.3);
 
-      return dateHeight + badgeGap + badgeHeight;
+      const weekdayHeight = options.weekdayName
+        ? doc.heightOfString(options.weekdayName, {
+            width: availableWidth,
+            align: "left",
+            lineBreak: false,
+          })
+        : 0;
+
+      const weekdayGap = options.weekdayName ? 3 : 0;
+      const holidayBadgeHeight = options.isHoliday ? 11 : 0;
+      const holidayBadgeGap = options.isHoliday ? 4 : 0;
+
+      doc.font(fontName).fontSize(fontSize);
+
+      return (
+        dateHeight +
+        weekdayGap +
+        weekdayHeight +
+        holidayBadgeGap +
+        holidayBadgeHeight
+      );
     }
 
     if (isNoteColumn) {
@@ -296,10 +364,19 @@ const drawTableRow = (
   const defaultTextColor = options.textColor || "#111827";
 
   /*
-   * Holiday rows use a light-yellow background.
-   * An explicit fillColor still applies to headers and totals.
+   * Background priority:
+   * 1. Holiday
+   * 2. Sunday
+   * 3. Saturday
+   * 4. Header/totals supplied fill
    */
-  const rowFillColor = options.isHoliday ? "#fefce8" : options.fillColor;
+  const rowFillColor = options.isHoliday
+    ? "#fefce8"
+    : options.weekendDay === "Sunday"
+      ? "#fff7ed"
+      : options.weekendDay === "Saturday"
+        ? "#f5f3ff"
+        : options.fillColor;
 
   if (rowFillColor) {
     doc
@@ -320,23 +397,38 @@ const drawTableRow = (
     const isNoteColumn = index === 7;
 
     /*
-     * Holiday date cell:
-     *
-     * 01 Jan 2026
-     * Holiday
+     * Date cell with weekday and optional Holiday badge.
      */
-    if (isDateColumn && options.isHoliday) {
+    if (isDateColumn && !options.isHeader) {
+      doc.font(fontName).fontSize(fontSize);
+
       const dateHeight = doc.heightOfString(cell, {
         width: cellWidth,
         align: "left",
         lineBreak: false,
       });
 
-      const contentHeight = dateHeight + 4 + 11;
+      doc.font("Helvetica-Bold").fontSize(6.3);
+
+      const weekdayHeight = options.weekdayName
+        ? doc.heightOfString(options.weekdayName, {
+            width: cellWidth,
+            align: "left",
+            lineBreak: false,
+          })
+        : 0;
+
+      const weekdayGap = options.weekdayName ? 3 : 0;
+      const badgeGap = options.isHoliday ? 4 : 0;
+      const badgeHeight = options.isHoliday ? 11 : 0;
+
+      const contentHeight =
+        dateHeight + weekdayGap + weekdayHeight + badgeGap + badgeHeight;
+
       const contentStartY = y + Math.max(5, (rowHeight - contentHeight) / 2);
 
       doc
-        .font("Helvetica-Bold")
+        .font(options.isHoliday ? "Helvetica-Bold" : fontName)
         .fontSize(fontSize)
         .fillColor("#111827")
         .text(cell, currentX + 4, contentStartY, {
@@ -346,29 +438,60 @@ const drawTableRow = (
           ellipsis: true,
         });
 
-      const badgeText = "Holiday";
-      const badgeX = currentX + 4;
-      const badgeY = contentStartY + dateHeight + 4;
-      const badgeWidth = 34;
-      const badgeHeight = 11;
+      let nextContentY = contentStartY + dateHeight;
 
-      doc
-        .roundedRect(badgeX, badgeY, badgeWidth, badgeHeight, badgeHeight / 2)
-        .fill("#facc15");
+      if (options.weekdayName) {
+        nextContentY += weekdayGap;
 
-      doc
-        .font("Helvetica-Bold")
-        .fontSize(5.8)
-        .fillColor("#713f12")
-        .text(badgeText, badgeX, badgeY + 2.1, {
-          width: badgeWidth,
-          align: "center",
-          lineBreak: false,
-        });
+        const weekdayColor = options.isHoliday
+          ? "#854d0e"
+          : options.weekendDay === "Sunday"
+            ? "#dc2626"
+            : options.weekendDay === "Saturday"
+              ? "#2563eb"
+              : "#64748b";
 
-      /*
-       * Reset font and text colour before drawing the next cell.
-       */
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(6.3)
+          .fillColor(weekdayColor)
+          .text(options.weekdayName, currentX + 4, nextContentY, {
+            width: cellWidth,
+            align: "left",
+            lineBreak: false,
+          });
+
+        nextContentY += weekdayHeight;
+      }
+
+      if (options.isHoliday) {
+        const badgeText = "Holiday";
+        const badgeX = currentX + 4;
+        const badgeY = nextContentY + badgeGap;
+        const badgeWidth = 34;
+        const holidayBadgeHeight = 11;
+
+        doc
+          .roundedRect(
+            badgeX,
+            badgeY,
+            badgeWidth,
+            holidayBadgeHeight,
+            holidayBadgeHeight / 2,
+          )
+          .fill("#facc15");
+
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(5.8)
+          .fillColor("#713f12")
+          .text(badgeText, badgeX, badgeY + 2.1, {
+            width: badgeWidth,
+            align: "center",
+            lineBreak: false,
+          });
+      }
+
       doc.font(fontName).fontSize(fontSize).fillColor(defaultTextColor);
 
       currentX += columnWidth;
@@ -419,10 +542,18 @@ const drawTableRow = (
     currentX += columnWidth;
   });
 
+  const rowBorderColor = options.isHoliday
+    ? "#fde68a"
+    : options.weekendDay === "Saturday"
+      ? "#ddd6fe"
+      : options.weekendDay === "Sunday"
+        ? "#fed7aa"
+        : "#e5e7eb";
+
   doc
     .moveTo(PDF_TABLE_START_X, y + rowHeight)
     .lineTo(PDF_TABLE_START_X + PDF_TABLE_WIDTH, y + rowHeight)
-    .strokeColor(options.isHoliday ? "#fde68a" : "#e5e7eb")
+    .strokeColor(rowBorderColor)
     .lineWidth(0.5)
     .stroke();
 
@@ -1299,6 +1430,8 @@ export const downloadMonthlyEntriesPdf = async (
   drawTableHeader();
 
   entries.forEach((entry) => {
+    const { weekdayName, weekendDay } = getPdfWeekdayInfo(entry.date);
+
     const tableRow = [
       formatDateForPdf(entry.date),
       String(entry.salesCount ?? 0),
@@ -1310,10 +1443,14 @@ export const downloadMonthlyEntriesPdf = async (
       entry.note?.trim() || "-",
     ];
 
-    const requiredRowHeight = getPdfTableRowHeight(doc, tableRow, {
+    const rowOptions: PdfTableRowOptions = {
       minimumHeight: 24,
       isHoliday: entry.isHoliday,
-    });
+      weekdayName,
+      weekendDay,
+    };
+
+    const requiredRowHeight = getPdfTableRowHeight(doc, tableRow, rowOptions);
 
     if (y + requiredRowHeight > getPdfContentBottom(doc)) {
       doc.addPage();
@@ -1322,10 +1459,7 @@ export const downloadMonthlyEntriesPdf = async (
       drawTableHeader();
     }
 
-    const actualRowHeight = drawTableRow(doc, y, tableRow, {
-      minimumHeight: 24,
-      isHoliday: entry.isHoliday,
-    });
+    const actualRowHeight = drawTableRow(doc, y, tableRow, rowOptions);
 
     y += actualRowHeight;
   });

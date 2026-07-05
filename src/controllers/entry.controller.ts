@@ -49,6 +49,14 @@ type FixedExpensePdfData = {
   totalFixedExpense: number;
 };
 
+type PdfTableRowOptions = {
+  bold?: boolean;
+  fillColor?: string;
+  textColor?: string;
+  isHeader?: boolean;
+  minimumHeight?: number;
+};
+
 const DEFAULT_FIXED_EXPENSE: FixedExpensePdfData = {
   shopRent: 5000,
   shopkeeperSalary: 10000,
@@ -58,6 +66,32 @@ const DEFAULT_FIXED_EXPENSE: FixedExpensePdfData = {
 
 const PDF_PAGE_START_Y = 50;
 const PDF_FOOTER_RESERVED_HEIGHT = 42;
+
+const PDF_TABLE_START_X = 40;
+
+/**
+ * A4 width is approximately 595 points.
+ *
+ * With left and right margins of 40:
+ * 595 - 40 - 40 = 515 points.
+ *
+ * These widths total exactly 515 points.
+ */
+const PDF_TABLE_COLUMN_WIDTHS = [
+  66, // Date
+  34, // Sales
+  55, // Cash
+  58, // PhonePe
+  55, // Total
+  58, // Expense
+  58, // Profit
+  131, // Note
+];
+
+const PDF_TABLE_WIDTH = PDF_TABLE_COLUMN_WIDTHS.reduce(
+  (total, width) => total + width,
+  0,
+);
 
 const entrySchema = z.object({
   date: z.string().min(1, "Date is required"),
@@ -100,6 +134,23 @@ const getMonthName = (month: number) => {
 };
 
 const formatDateForPdf = (date: string) => {
+  const dateOnlyMatch = date.match(/^(\d{4})-(\d{2})-(\d{2})/);
+
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch;
+
+    const parsedDate = new Date(
+      Date.UTC(Number(year), Number(month) - 1, Number(day)),
+    );
+
+    return new Intl.DateTimeFormat("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    }).format(parsedDate);
+  }
+
   return new Intl.DateTimeFormat("en-IN", {
     day: "2-digit",
     month: "short",
@@ -159,56 +210,134 @@ const calculateMonthlyAveragesForPdf = (
   };
 };
 
+/**
+ * Calculates the required height of one table row.
+ *
+ * The Note column is allowed to wrap. The row grows according to the
+ * wrapped Note content.
+ */
+const getPdfTableRowHeight = (
+  doc: PDFKit.PDFDocument,
+  row: string[],
+  options: PdfTableRowOptions = {},
+) => {
+  const fontName = options.bold ? "Helvetica-Bold" : "Helvetica";
+  const fontSize = options.isHeader ? 7.3 : 8;
+
+  const horizontalPadding = 8;
+  const verticalPadding = options.isHeader ? 14 : 12;
+
+  doc.font(fontName).fontSize(fontSize);
+
+  const cellHeights = row.map((rawCell, index) => {
+    const cell = rawCell || "-";
+    const columnWidth = PDF_TABLE_COLUMN_WIDTHS[index];
+    const availableWidth = columnWidth - horizontalPadding;
+
+    const isNoteColumn = index === 7;
+
+    if (isNoteColumn) {
+      return doc.heightOfString(cell, {
+        width: availableWidth,
+        align: "left",
+        lineGap: 1.5,
+      });
+    }
+
+    return doc.heightOfString(cell, {
+      width: availableWidth,
+      align: index === 0 ? "left" : "right",
+      lineBreak: false,
+    });
+  });
+
+  const largestCellHeight = Math.max(...cellHeights);
+
+  return Math.max(
+    options.minimumHeight ?? (options.isHeader ? 28 : 24),
+    largestCellHeight + verticalPadding,
+  );
+};
+
+/**
+ * Draws a table row and returns its actual height.
+ */
 const drawTableRow = (
   doc: PDFKit.PDFDocument,
   y: number,
   row: string[],
-  options?: {
-    bold?: boolean;
-    fillColor?: string;
-    textColor?: string;
-  },
+  options: PdfTableRowOptions = {},
 ) => {
-  const startX = 40;
+  const rowHeight = getPdfTableRowHeight(doc, row, options);
 
-  /*
-   * Reduced Date width from 76 to 62.
-   * The remaining width is redistributed across the numeric and Note columns.
-   *
-   * Total width remains 620 points.
-   */
-  const columnWidths = [62, 48, 80, 80, 80, 80, 80, 110];
+  const fontName = options.bold ? "Helvetica-Bold" : "Helvetica";
+  const fontSize = options.isHeader ? 7.3 : 8;
 
-  const tableWidth = columnWidths.reduce((sum, width) => sum + width, 0);
-
-  let currentX = startX;
-
-  if (options?.fillColor) {
-    doc.rect(startX, y - 6, tableWidth, 26).fill(options.fillColor);
+  if (options.fillColor) {
+    doc
+      .rect(PDF_TABLE_START_X, y, PDF_TABLE_WIDTH, rowHeight)
+      .fill(options.fillColor);
   }
 
   doc
-    .fillColor(options?.textColor || "#111827")
-    .font(options?.bold ? "Helvetica-Bold" : "Helvetica")
-    .fontSize(8);
+    .font(fontName)
+    .fontSize(fontSize)
+    .fillColor(options.textColor || "#111827");
 
-  row.forEach((cell, index) => {
-    doc.text(cell, currentX + 4, y, {
-      width: columnWidths[index] - 8,
-      align: index === 0 || index === 7 ? "left" : "right",
-      lineBreak: false,
-      ellipsis: true,
-    });
+  let currentX = PDF_TABLE_START_X;
 
-    currentX += columnWidths[index];
+  row.forEach((rawCell, index) => {
+    const cell = rawCell || "-";
+    const columnWidth = PDF_TABLE_COLUMN_WIDTHS[index];
+    const cellWidth = columnWidth - 8;
+
+    const isDateColumn = index === 0;
+    const isNoteColumn = index === 7;
+
+    const alignment = isDateColumn || isNoteColumn ? "left" : "right";
+
+    if (isNoteColumn) {
+      const noteHeight = doc.heightOfString(cell, {
+        width: cellWidth,
+        align: "left",
+        lineGap: 1.5,
+      });
+
+      const noteY = y + Math.max(6, (rowHeight - noteHeight) / 2);
+
+      doc.text(cell, currentX + 4, noteY, {
+        width: cellWidth,
+        align: "left",
+        lineGap: 1.5,
+      });
+    } else {
+      const textHeight = doc.heightOfString(cell, {
+        width: cellWidth,
+        align: alignment,
+        lineBreak: false,
+      });
+
+      const textY = y + Math.max(5, (rowHeight - textHeight) / 2);
+
+      doc.text(cell, currentX + 4, textY, {
+        width: cellWidth,
+        align: alignment,
+        lineBreak: false,
+        ellipsis: true,
+      });
+    }
+
+    currentX += columnWidth;
   });
 
   doc
-    .moveTo(startX, y + 20)
-    .lineTo(startX + tableWidth, y + 20)
+    .moveTo(PDF_TABLE_START_X, y + rowHeight)
+    .lineTo(PDF_TABLE_START_X + PDF_TABLE_WIDTH, y + rowHeight)
     .strokeColor("#e5e7eb")
     .lineWidth(0.5)
     .stroke();
+
+  return rowHeight;
 };
 
 const drawAverageSection = (
@@ -249,7 +378,6 @@ const drawAverageSection = (
     .roundedRect(startX, y, sectionWidth, sectionHeight, 10)
     .fillAndStroke("#f8fbff", "#bfdbfe");
 
-  // Title row
   doc
     .roundedRect(
       startX + sectionPadding,
@@ -556,9 +684,6 @@ const drawFixedExpenseSection = (
   items.forEach((item, index) => {
     const itemX = startX + horizontalPadding + index * itemWidth;
 
-    /*
-     * Divider before Total.
-     */
     if (index === items.length - 1) {
       doc
         .moveTo(itemX, itemsY - 4)
@@ -618,7 +743,6 @@ const drawBusinessSummarySection = (
     .roundedRect(startX, y, sectionWidth, sectionHeight, 10)
     .fillAndStroke("#ffffff", "#e2e8f0");
 
-  // Section heading
   doc
     .font("Helvetica-Bold")
     .fontSize(9)
@@ -673,7 +797,6 @@ const drawBusinessSummarySection = (
       .roundedRect(cardX, cardsY, cardWidth, cardHeight, 9)
       .fillAndStroke(card.background, card.border);
 
-    // Card title
     doc
       .font("Helvetica-Bold")
       .fontSize(7.5)
@@ -683,7 +806,6 @@ const drawBusinessSummarySection = (
         lineGap: 0.5,
       });
 
-    // Amount
     doc
       .font("Helvetica-Bold")
       .fontSize(11.5)
@@ -694,7 +816,6 @@ const drawBusinessSummarySection = (
         ellipsis: true,
       });
 
-    // Divider
     doc
       .moveTo(contentX, cardsY + 59)
       .lineTo(cardX + cardWidth - 14, cardsY + 59)
@@ -702,7 +823,6 @@ const drawBusinessSummarySection = (
       .lineWidth(0.5)
       .stroke();
 
-    // Description
     doc
       .font("Helvetica-Bold")
       .fontSize(6.5)
@@ -723,14 +843,6 @@ const drawPdfFooter = (doc: PDFKit.PDFDocument) => {
   for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
     doc.switchToPage(pageRange.start + pageIndex);
 
-    /*
-     * Keep the footer above PDFKit's bottom margin.
-     *
-     * A4 height is approximately 842 points.
-     * With a 40-point bottom margin, printable content ends around 802.
-     * Subtracting another 12 points ensures that the footer line remains
-     * completely within the printable area and does not create a new page.
-     */
     const footerY = doc.page.height - doc.page.margins.bottom - 12;
 
     doc.save();
@@ -1060,9 +1172,6 @@ export const downloadMonthlyEntriesPdf = async (
 
   y = drawAverageSection(doc, y, averages);
 
-  /*
-   * Draw the fixed-expense breakdown directly below Daily Averages.
-   */
   y = ensurePdfSpace(doc, y, 100);
 
   y = drawFixedExpenseSection(doc, y, fixedExpense);
@@ -1078,33 +1187,30 @@ export const downloadMonthlyEntriesPdf = async (
     "Note",
   ];
 
-  y = ensurePdfSpace(doc, y, 50);
+  const drawTableHeader = () => {
+    const headerHeight = drawTableRow(doc, y, headers, {
+      bold: true,
+      fillColor: "#f1f5f9",
+      textColor: "#334155",
+      isHeader: true,
+      minimumHeight: 28,
+    });
 
-  drawTableRow(doc, y, headers, {
+    y += headerHeight;
+  };
+
+  const initialHeaderHeight = getPdfTableRowHeight(doc, headers, {
     bold: true,
-    fillColor: "#f1f5f9",
-    textColor: "#334155",
+    isHeader: true,
+    minimumHeight: 28,
   });
 
-  y += 24;
+  y = ensurePdfSpace(doc, y, initialHeaderHeight + 24);
+
+  drawTableHeader();
 
   entries.forEach((entry) => {
-    const nextRowWouldOverflow = y + 24 > getPdfContentBottom(doc);
-
-    if (nextRowWouldOverflow) {
-      doc.addPage();
-      y = PDF_PAGE_START_Y;
-
-      drawTableRow(doc, y, headers, {
-        bold: true,
-        fillColor: "#f1f5f9",
-        textColor: "#334155",
-      });
-
-      y += 24;
-    }
-
-    drawTableRow(doc, y, [
+    const tableRow = [
       formatDateForPdf(entry.date),
       String(entry.salesCount ?? 0),
       formatMoneyForPdf(entry.cash),
@@ -1112,46 +1218,64 @@ export const downloadMonthlyEntriesPdf = async (
       formatMoneyForPdf(entry.total),
       formatMoneyForPdf(entry.expense),
       formatMoneyForPdf(entry.profit),
-      entry.note || "-",
-    ]);
+      entry.note?.trim() || "-",
+    ];
 
-    y += 24;
+    const requiredRowHeight = getPdfTableRowHeight(doc, tableRow, {
+      minimumHeight: 24,
+    });
+
+    if (y + requiredRowHeight > getPdfContentBottom(doc)) {
+      doc.addPage();
+      y = PDF_PAGE_START_Y;
+
+      drawTableHeader();
+    }
+
+    const actualRowHeight = drawTableRow(doc, y, tableRow, {
+      minimumHeight: 24,
+    });
+
+    y += actualRowHeight;
   });
 
-  /*
-   * Reserve space for the totals row.
-   */
-  y = ensurePdfSpace(doc, y, 32);
+  const totalsRow = [
+    "Totals",
+    String(totals.salesCount),
+    formatMoneyForPdf(totals.cash),
+    formatMoneyForPdf(totals.phonePe),
+    formatMoneyForPdf(totals.total),
+    formatMoneyForPdf(totals.expense),
+    formatMoneyForPdf(totals.profit),
+    "",
+  ];
 
-  drawTableRow(
-    doc,
-    y,
-    [
-      "Totals",
-      String(totals.salesCount),
-      formatMoneyForPdf(totals.cash),
-      formatMoneyForPdf(totals.phonePe),
-      formatMoneyForPdf(totals.total),
-      formatMoneyForPdf(totals.expense),
-      formatMoneyForPdf(totals.profit),
-      "",
-    ],
-    {
-      bold: true,
-      fillColor: "#f8fafc",
-      textColor: "#111827",
-    },
-  );
+  const totalsRowHeight = getPdfTableRowHeight(doc, totalsRow, {
+    bold: true,
+    minimumHeight: 28,
+  });
 
-  y += 42;
+  if (y + totalsRowHeight > getPdfContentBottom(doc)) {
+    doc.addPage();
+    y = PDF_PAGE_START_Y;
 
-  /*
-   * The business summary requires approximately 180 points.
-   * When sufficient room is unavailable, it starts on a clean new page.
-   */
-  y = ensurePdfSpace(doc, y, 180);
+    drawTableHeader();
+  }
 
-  drawBusinessSummarySection(doc, y, {
+  y += drawTableRow(doc, y, totalsRow, {
+    bold: true,
+    fillColor: "#f8fafc",
+    textColor: "#111827",
+    minimumHeight: 28,
+  });
+
+  y += 18;
+
+  const businessSummaryRequiredHeight = 160;
+
+  y = ensurePdfSpace(doc, y, businessSummaryRequiredHeight);
+
+  y = drawBusinessSummarySection(doc, y, {
     salesProfit: totals.profit,
     fixedExpense: fixedExpense.totalFixedExpense,
     netProfit,

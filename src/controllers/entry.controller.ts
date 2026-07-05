@@ -96,6 +96,11 @@ type AnnualTableRowOptions = {
   textColor?: string;
   isHeader?: boolean;
   minimumHeight?: number;
+  /**
+   * Used to colour Profit and Net Profit cells.
+   */
+  profitValue?: number;
+  netProfitValue?: number;
 };
 
 const DEFAULT_FIXED_EXPENSE: FixedExpensePdfData = {
@@ -1085,27 +1090,60 @@ const getAnnualTableRowHeight = (
   row: string[],
   options: AnnualTableRowOptions = {},
 ) => {
-  const fontName = options.bold ? "Helvetica-Bold" : "Helvetica";
-  const fontSize = options.isHeader ? 7 : 8;
+  const defaultFontName = options.bold ? "Helvetica-Bold" : "Helvetica";
 
-  doc.font(fontName).fontSize(fontSize);
+  const defaultFontSize = options.isHeader ? 7 : 8;
+  const verticalPadding = options.isHeader ? 14 : 16;
 
   const cellHeights = row.map((rawCell, index) => {
     const cell = rawCell || "-";
     const availableWidth = ANNUAL_TABLE_COLUMN_WIDTHS[index] - 10;
 
-    const align = index === 0 || index === 6 ? "left" : "right";
+    /*
+     * Fixed Monthly Expenses cell:
+     *
+     * Rs. 16,084
+     * Rent Rs. 5,000 • Salary Rs. 10,000 • EB Rs. 1,084
+     */
+    if (index === 6 && !options.isHeader) {
+      const [amountLine = "-", ...detailLines] = cell.split("\n");
+      const detailsLine = detailLines.join(" ");
+
+      doc.font("Helvetica-Bold").fontSize(8.5);
+
+      const amountHeight = doc.heightOfString(amountLine, {
+        width: availableWidth,
+        align: "left",
+        lineBreak: false,
+      });
+
+      doc.font("Helvetica-Bold").fontSize(6.2);
+
+      const detailsHeight = detailsLine
+        ? doc.heightOfString(detailsLine, {
+            width: availableWidth,
+            align: "left",
+            lineGap: 1,
+          })
+        : 0;
+
+      return amountHeight + (detailsLine ? 4 : 0) + detailsHeight;
+    }
+
+    doc.font(defaultFontName).fontSize(defaultFontSize);
+
+    const align = index === 0 ? "left" : "right";
 
     return doc.heightOfString(cell, {
       width: availableWidth,
       align,
-      lineGap: index === 6 ? 1.5 : 0,
+      lineBreak: options.isHeader ? false : undefined,
     });
   });
 
   return Math.max(
-    options.minimumHeight ?? (options.isHeader ? 30 : 42),
-    Math.max(...cellHeights) + 14,
+    options.minimumHeight ?? (options.isHeader ? 30 : 46),
+    Math.max(...cellHeights) + verticalPadding,
   );
 };
 
@@ -1123,13 +1161,10 @@ const drawAnnualTableRow = (
       .fill(options.fillColor);
   }
 
-  const fontName = options.bold ? "Helvetica-Bold" : "Helvetica";
-  const fontSize = options.isHeader ? 7 : 8;
+  const defaultFontName = options.bold ? "Helvetica-Bold" : "Helvetica";
 
-  doc
-    .font(fontName)
-    .fontSize(fontSize)
-    .fillColor(options.textColor ?? "#111827");
+  const defaultFontSize = options.isHeader ? 7 : 8;
+  const defaultTextColor = options.textColor ?? "#111827";
 
   let currentX = ANNUAL_TABLE_START_X;
 
@@ -1137,23 +1172,107 @@ const drawAnnualTableRow = (
     const cell = rawCell || "-";
     const columnWidth = ANNUAL_TABLE_COLUMN_WIDTHS[index];
     const cellWidth = columnWidth - 10;
+    const cellX = currentX + 5;
 
-    const align = index === 0 || index === 6 ? "left" : "right";
+    /*
+     * Fixed Monthly Expenses column.
+     *
+     * Render the total as large/bold, then render the individual
+     * expense breakdown underneath in smaller muted text.
+     */
+    if (index === 6 && !options.isHeader) {
+      const [amountLine = "-", ...detailLines] = cell.split("\n");
+      const detailsLine = detailLines.join(" ");
 
-    const lineGap = index === 6 ? 1.5 : 0;
+      doc.font("Helvetica-Bold").fontSize(8.5);
+
+      const amountHeight = doc.heightOfString(amountLine, {
+        width: cellWidth,
+        align: "left",
+        lineBreak: false,
+      });
+
+      doc.font("Helvetica-Bold").fontSize(6.2);
+
+      const detailsHeight = detailsLine
+        ? doc.heightOfString(detailsLine, {
+            width: cellWidth,
+            align: "left",
+            lineGap: 1,
+          })
+        : 0;
+
+      const contentHeight =
+        amountHeight + (detailsLine ? 4 : 0) + detailsHeight;
+
+      const contentY = y + Math.max(7, (rowHeight - contentHeight) / 2);
+
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(8.5)
+        .fillColor("#111827")
+        .text(amountLine, cellX, contentY, {
+          width: cellWidth,
+          align: "left",
+          lineBreak: false,
+          ellipsis: true,
+        });
+
+      if (detailsLine) {
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(6.2)
+          .fillColor("#64748b")
+          .text(detailsLine, cellX, contentY + amountHeight + 4, {
+            width: cellWidth,
+            align: "left",
+            lineGap: 1,
+          });
+      }
+
+      currentX += columnWidth;
+      return;
+    }
+
+    const align = index === 0 ? "left" : "right";
+
+    let cellTextColor = defaultTextColor;
+
+    /*
+     * Profit column.
+     */
+    if (index === 7 && !options.isHeader) {
+      cellTextColor = (options.profitValue ?? 0) >= 0 ? "#16a34a" : "#dc2626";
+    }
+
+    /*
+     * Net Profit column.
+     */
+    if (index === 8 && !options.isHeader) {
+      cellTextColor =
+        (options.netProfitValue ?? 0) >= 0 ? "#16a34a" : "#dc2626";
+    }
+
+    const cellFontName =
+      index === 0 || index === 7 || index === 8 || options.bold
+        ? "Helvetica-Bold"
+        : defaultFontName;
+
+    doc.font(cellFontName).fontSize(defaultFontSize).fillColor(cellTextColor);
 
     const textHeight = doc.heightOfString(cell, {
       width: cellWidth,
       align,
-      lineGap,
+      lineBreak: options.isHeader ? false : undefined,
     });
 
     const textY = y + Math.max(6, (rowHeight - textHeight) / 2);
 
-    doc.text(cell, currentX + 5, textY, {
+    doc.text(cell, cellX, textY, {
       width: cellWidth,
       align,
-      lineGap,
+      lineBreak: options.isHeader ? false : undefined,
+      ellipsis: options.isHeader,
     });
 
     currentX += columnWidth;
@@ -2097,18 +2216,23 @@ export const downloadYearlyEntriesPdf = async (req: Request, res: Response) => {
       formatMoneyForPdf(row.totalPhonePe),
       formatMoneyForPdf(row.totalCollection),
       formatMoneyForPdf(row.totalExpense),
-      `${formatMoneyForPdf(row.totalFixedExpense)}\nRent ${formatMoneyForPdf(
-        row.shopRent,
-      )} • Salary ${formatMoneyForPdf(
-        row.shopkeeperSalary,
-      )} • EB ${formatMoneyForPdf(row.electricityBill)}`,
+      [
+        formatMoneyForPdf(row.totalFixedExpense),
+        `Rent ${formatMoneyForPdf(row.shopRent)} • Salary ${formatMoneyForPdf(
+          row.shopkeeperSalary,
+        )} • EB ${formatMoneyForPdf(row.electricityBill)}`,
+      ].join("\n"),
       formatMoneyForPdf(row.totalProfit),
       formatMoneyForPdf(row.netProfit),
     ];
 
-    const requiredHeight = getAnnualTableRowHeight(doc, tableRow, {
-      minimumHeight: 42,
-    });
+    const rowOptions: AnnualTableRowOptions = {
+      minimumHeight: 46,
+      profitValue: row.totalProfit,
+      netProfitValue: row.netProfit,
+    };
+
+    const requiredHeight = getAnnualTableRowHeight(doc, tableRow, rowOptions);
 
     if (y + requiredHeight > getPdfContentBottom(doc)) {
       doc.addPage();
@@ -2116,9 +2240,7 @@ export const downloadYearlyEntriesPdf = async (req: Request, res: Response) => {
       drawAnnualHeader();
     }
 
-    y += drawAnnualTableRow(doc, y, tableRow, {
-      minimumHeight: 42,
-    });
+    y += drawAnnualTableRow(doc, y, tableRow, rowOptions);
   });
 
   const totalsRow = [
@@ -2133,10 +2255,23 @@ export const downloadYearlyEntriesPdf = async (req: Request, res: Response) => {
     formatMoneyForPdf(totals.netProfit),
   ];
 
-  const totalsRowHeight = getAnnualTableRowHeight(doc, totalsRow, {
+  const totalsRowOptions: AnnualTableRowOptions = {
     bold: true,
-    minimumHeight: 34,
-  });
+
+    minimumHeight: 36,
+
+    profitValue: totals.totalProfit,
+
+    netProfitValue: totals.netProfit,
+  };
+
+  const totalsRowHeight = getAnnualTableRowHeight(
+    doc,
+
+    totalsRow,
+
+    totalsRowOptions,
+  );
 
   if (y + totalsRowHeight > getPdfContentBottom(doc)) {
     doc.addPage();
@@ -2144,12 +2279,15 @@ export const downloadYearlyEntriesPdf = async (req: Request, res: Response) => {
     drawAnnualHeader();
   }
 
-  y += drawAnnualTableRow(doc, y, totalsRow, {
-    bold: true,
-    minimumHeight: 34,
-    fillColor: "#f8fafc",
-    textColor: "#111827",
-  });
+ y += drawAnnualTableRow(doc, y, totalsRow, {
+
+  ...totalsRowOptions,
+
+  fillColor: "#f8fafc",
+
+  textColor: "#111827",
+
+});
 
   y += 20;
 

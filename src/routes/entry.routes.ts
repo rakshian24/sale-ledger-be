@@ -3,6 +3,7 @@ import {
   createEntry,
   deleteEntry,
   downloadMonthlyEntriesPdf,
+  downloadYearlyEntriesPdf,
   getEntries,
   getEntryById,
   getMonthlySummary,
@@ -22,7 +23,11 @@ router.get("/summary/monthly", getMonthlySummary);
 router.get("/summary/yearly", getYearlySummary);
 
 router.get("/report/pdf", downloadMonthlyEntriesPdf);
+router.get("/report/yearly", downloadYearlyEntriesPdf);
 
+/*
+ * Keep dynamic ID routes below all named routes.
+ */
 router.get("/:id", getEntryById);
 router.put("/:id", updateEntry);
 router.delete("/:id", deleteEntry);

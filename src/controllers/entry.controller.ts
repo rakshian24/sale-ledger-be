@@ -5,15 +5,6 @@ import { z } from "zod";
 import { Entry } from "../models/Entry.model";
 import { FixedMonthlyExpense } from "../models/FixedMonthlyExpense.model";
 
-type SummaryTotals = {
-  totalSales: number;
-  totalCash: number;
-  totalPhonePe: number;
-  totalCollection: number;
-  totalExpense: number;
-  totalProfit: number;
-};
-
 type AverageEntry = {
   salesCount?: number;
   cash?: number;
@@ -55,6 +46,58 @@ type PdfTableRowOptions = {
   weekendDay?: "Saturday" | "Sunday" | null;
 };
 
+type PdfWeekdayInfo = {
+  weekdayName: string;
+  weekendDay: "Saturday" | "Sunday" | null;
+};
+
+type AnnualEntryAggregation = {
+  _id: number;
+  entryCount: number;
+  totalSales: number;
+  totalCash: number;
+  totalPhonePe: number;
+  totalCollection: number;
+  totalExpense: number;
+  totalProfit: number;
+};
+
+type AnnualMonthPdfRow = {
+  month: number;
+  monthName: string;
+  entryCount: number;
+  totalSales: number;
+  totalCash: number;
+  totalPhonePe: number;
+  totalCollection: number;
+  totalExpense: number;
+  totalProfit: number;
+  shopRent: number;
+  shopkeeperSalary: number;
+  electricityBill: number;
+  totalFixedExpense: number;
+  netProfit: number;
+};
+
+type AnnualPdfTotals = {
+  totalSales: number;
+  totalCash: number;
+  totalPhonePe: number;
+  totalCollection: number;
+  totalExpense: number;
+  totalProfit: number;
+  totalFixedExpense: number;
+  netProfit: number;
+};
+
+type AnnualTableRowOptions = {
+  bold?: boolean;
+  fillColor?: string;
+  textColor?: string;
+  isHeader?: boolean;
+  minimumHeight?: number;
+};
+
 const DEFAULT_FIXED_EXPENSE: FixedExpensePdfData = {
   shopRent: 5000,
   shopkeeperSalary: 10000,
@@ -67,14 +110,6 @@ const PDF_FOOTER_RESERVED_HEIGHT = 42;
 
 const PDF_TABLE_START_X = 40;
 
-/**
- * A4 width is approximately 595 points.
- *
- * With left and right margins of 40:
- * 595 - 40 - 40 = 515 points.
- *
- * These widths total exactly 515 points.
- */
 const PDF_TABLE_COLUMN_WIDTHS = [
   66, // Date
   34, // Sales
@@ -87,6 +122,32 @@ const PDF_TABLE_COLUMN_WIDTHS = [
 ];
 
 const PDF_TABLE_WIDTH = PDF_TABLE_COLUMN_WIDTHS.reduce(
+  (total, width) => total + width,
+  0,
+);
+
+const ANNUAL_TABLE_START_X = 30;
+const ANNUAL_PAGE_START_Y = 40;
+
+/*
+ * Landscape A4 printable width:
+ * approximately 842 - 30 - 30 = 782 points.
+ *
+ * Total width below = 781 points.
+ */
+const ANNUAL_TABLE_COLUMN_WIDTHS = [
+  70, // Month
+  45, // Sales
+  75, // Cash
+  75, // PhonePe
+  80, // Total
+  80, // Expense
+  180, // Fixed expenses
+  80, // Profit
+  96, // Net profit
+];
+
+const ANNUAL_TABLE_WIDTH = ANNUAL_TABLE_COLUMN_WIDTHS.reduce(
   (total, width) => total + width,
   0,
 );
@@ -119,15 +180,16 @@ const getMonthRange = (month: number, year: number) => {
   const startDate = new Date(Date.UTC(year, monthIndex, 1));
   const endDate = new Date(Date.UTC(year, monthIndex + 1, 1));
 
-  const start = startDate.toISOString().slice(0, 10);
-  const end = endDate.toISOString().slice(0, 10);
-
-  return { start, end };
+  return {
+    start: startDate.toISOString().slice(0, 10),
+    end: endDate.toISOString().slice(0, 10),
+  };
 };
 
 const getMonthName = (month: number) => {
   return new Intl.DateTimeFormat("en-IN", {
     month: "long",
+    timeZone: "UTC",
   }).format(new Date(Date.UTC(2026, month - 1, 1)));
 };
 
@@ -154,11 +216,6 @@ const formatDateForPdf = (date: string) => {
     month: "short",
     year: "numeric",
   }).format(new Date(date));
-};
-
-type PdfWeekdayInfo = {
-  weekdayName: string;
-  weekendDay: "Saturday" | "Sunday" | null;
 };
 
 const getPdfWeekdayInfo = (date: string): PdfWeekdayInfo => {
@@ -188,7 +245,7 @@ const getPdfWeekdayInfo = (date: string): PdfWeekdayInfo => {
     timeZone: "UTC",
   }).format(parsedDate);
 
-  const shortWeekdayName = new Intl.DateTimeFormat("en-IN", {
+  const weekdayName = new Intl.DateTimeFormat("en-IN", {
     weekday: "short",
     timeZone: "UTC",
   }).format(parsedDate);
@@ -202,7 +259,7 @@ const getPdfWeekdayInfo = (date: string): PdfWeekdayInfo => {
   }
 
   return {
-    weekdayName: shortWeekdayName,
+    weekdayName,
     weekendDay,
   };
 };
@@ -259,12 +316,24 @@ const calculateMonthlyAveragesForPdf = (
   };
 };
 
-/**
- * Calculates the required height of one table row.
- *
- * The Note column is allowed to wrap. The row grows according to the
- * wrapped Note content.
- */
+const getPdfContentBottom = (doc: PDFKit.PDFDocument) => {
+  return doc.page.height - doc.page.margins.bottom - PDF_FOOTER_RESERVED_HEIGHT;
+};
+
+const ensurePdfSpace = (
+  doc: PDFKit.PDFDocument,
+  y: number,
+  requiredHeight: number,
+) => {
+  if (y + requiredHeight <= getPdfContentBottom(doc)) {
+    return y;
+  }
+
+  doc.addPage();
+
+  return PDF_PAGE_START_Y;
+};
+
 const getPdfTableRowHeight = (
   doc: PDFKit.PDFDocument,
   row: string[],
@@ -286,13 +355,6 @@ const getPdfTableRowHeight = (
     const isDateColumn = index === 0;
     const isNoteColumn = index === 7;
 
-    /*
-     * Date cell layout:
-     *
-     * 01 Jan 2026
-     * Mon
-     * Holiday        // only for holiday rows
-     */
     if (isDateColumn && !options.isHeader) {
       const dateHeight = doc.heightOfString(cell, {
         width: availableWidth,
@@ -340,17 +402,12 @@ const getPdfTableRowHeight = (
     });
   });
 
-  const largestCellHeight = Math.max(...cellHeights);
-
   return Math.max(
     options.minimumHeight ?? (options.isHeader ? 28 : 24),
-    largestCellHeight + verticalPadding,
+    Math.max(...cellHeights) + verticalPadding,
   );
 };
 
-/**
- * Draws a table row and returns its actual height.
- */
 const drawTableRow = (
   doc: PDFKit.PDFDocument,
   y: number,
@@ -363,13 +420,6 @@ const drawTableRow = (
   const fontSize = options.isHeader ? 7.3 : 8;
   const defaultTextColor = options.textColor || "#111827";
 
-  /*
-   * Background priority:
-   * 1. Holiday
-   * 2. Sunday
-   * 3. Saturday
-   * 4. Header/totals supplied fill
-   */
   const rowFillColor = options.isHoliday
     ? "#fefce8"
     : options.weekendDay === "Sunday"
@@ -396,9 +446,6 @@ const drawTableRow = (
     const isDateColumn = index === 0;
     const isNoteColumn = index === 7;
 
-    /*
-     * Date cell with weekday and optional Holiday badge.
-     */
     if (isDateColumn && !options.isHeader) {
       doc.font(fontName).fontSize(fontSize);
 
@@ -446,9 +493,9 @@ const drawTableRow = (
         const weekdayColor = options.isHoliday
           ? "#854d0e"
           : options.weekendDay === "Sunday"
-            ? "#dc2626"
+            ? "#ea580c"
             : options.weekendDay === "Saturday"
-              ? "#2563eb"
+              ? "#7c3aed"
               : "#64748b";
 
         doc
@@ -465,7 +512,6 @@ const drawTableRow = (
       }
 
       if (options.isHoliday) {
-        const badgeText = "Holiday";
         const badgeX = currentX + 4;
         const badgeY = nextContentY + badgeGap;
         const badgeWidth = 34;
@@ -485,7 +531,7 @@ const drawTableRow = (
           .font("Helvetica-Bold")
           .fontSize(5.8)
           .fillColor("#713f12")
-          .text(badgeText, badgeX, badgeY + 2.1, {
+          .text("Holiday", badgeX, badgeY + 2.1, {
             width: badgeWidth,
             align: "center",
             lineBreak: false,
@@ -563,22 +609,13 @@ const drawTableRow = (
 const drawAverageSection = (
   doc: PDFKit.PDFDocument,
   y: number,
-  averages: {
-    workingDaysCount: number;
-    salesCount: number;
-    cash: number;
-    phonePe: number;
-    total: number;
-    expense: number;
-    profit: number;
-  },
+  averages: MonthlyAveragesForPdf,
 ) => {
   const startX = 40;
   const sectionWidth = doc.page.width - 80;
 
   const sectionPadding = 10;
   const gap = 8;
-
   const headingHeight = 38;
   const cardHeight = 38;
 
@@ -649,11 +686,12 @@ const drawAverageSection = (
   const secondCardRowY = firstCardRowY + cardHeight + gap;
 
   averageItems.forEach(([label, value], index) => {
-    const row = Math.floor(index / 3);
-    const column = index % 3;
+    const rowIndex = Math.floor(index / 3);
+    const columnIndex = index % 3;
 
-    const x = startX + sectionPadding + column * (cardWidth + gap);
-    const cardY = row === 0 ? firstCardRowY : secondCardRowY;
+    const x = startX + sectionPadding + columnIndex * (cardWidth + gap);
+
+    const cardY = rowIndex === 0 ? firstCardRowY : secondCardRowY;
 
     doc
       .roundedRect(x, cardY, cardWidth, cardHeight, 8)
@@ -689,26 +727,6 @@ const drawAverageSection = (
   return y + sectionHeight + 22;
 };
 
-const getPdfContentBottom = (doc: PDFKit.PDFDocument) => {
-  return doc.page.height - doc.page.margins.bottom - PDF_FOOTER_RESERVED_HEIGHT;
-};
-
-const ensurePdfSpace = (
-  doc: PDFKit.PDFDocument,
-  y: number,
-  requiredHeight: number,
-) => {
-  const contentBottom = getPdfContentBottom(doc);
-
-  if (y + requiredHeight <= contentBottom) {
-    return y;
-  }
-
-  doc.addPage();
-
-  return PDF_PAGE_START_Y;
-};
-
 const drawSummarySection = (
   doc: PDFKit.PDFDocument,
   y: number,
@@ -740,6 +758,7 @@ const drawSummarySection = (
       background: "#f8fafc",
       border: "#e2e8f0",
       valueColor: "#111827",
+      meta: "",
     },
     {
       label: "Total Cash",
@@ -747,6 +766,7 @@ const drawSummarySection = (
       background: "#f8fafc",
       border: "#e2e8f0",
       valueColor: "#111827",
+      meta: "",
     },
     {
       label: "Total PhonePe",
@@ -754,6 +774,7 @@ const drawSummarySection = (
       background: "#f8fafc",
       border: "#e2e8f0",
       valueColor: "#111827",
+      meta: "",
     },
     {
       label: "Total Collection",
@@ -761,6 +782,7 @@ const drawSummarySection = (
       background: "#f8fafc",
       border: "#e2e8f0",
       valueColor: "#111827",
+      meta: "",
     },
     {
       label: "Total Expense",
@@ -768,6 +790,7 @@ const drawSummarySection = (
       background: "#f8fafc",
       border: "#e2e8f0",
       valueColor: "#111827",
+      meta: "",
     },
     {
       label: "Fixed Monthly Expenses",
@@ -787,6 +810,7 @@ const drawSummarySection = (
       background: data.totals.profit >= 0 ? "#f0fdf4" : "#fef2f2",
       border: data.totals.profit >= 0 ? "#86efac" : "#fca5a5",
       valueColor: data.totals.profit >= 0 ? "#16a34a" : "#dc2626",
+      meta: "",
     },
     {
       label: "Net Profit After Fixed Expenses",
@@ -794,15 +818,16 @@ const drawSummarySection = (
       background: data.netProfit >= 0 ? "#f0fdf4" : "#fef2f2",
       border: data.netProfit >= 0 ? "#86efac" : "#fca5a5",
       valueColor: data.netProfit >= 0 ? "#16a34a" : "#dc2626",
+      meta: "",
     },
   ];
 
   items.forEach((item, index) => {
-    const row = Math.floor(index / columns);
-    const column = index % columns;
+    const rowIndex = Math.floor(index / columns);
+    const columnIndex = index % columns;
 
-    const x = startX + column * (cardWidth + gap);
-    const cardY = y + row * (cardHeight + gap);
+    const x = startX + columnIndex * (cardWidth + gap);
+    const cardY = y + rowIndex * (cardHeight + gap);
 
     doc
       .roundedRect(x, cardY, cardWidth, cardHeight, 8)
@@ -854,7 +879,6 @@ const drawFixedExpenseSection = (
   const sectionHeight = 72;
 
   const horizontalPadding = 14;
-  const titleY = y + 10;
   const itemsY = y + 36;
 
   doc
@@ -868,7 +892,7 @@ const drawFixedExpenseSection = (
     .text(
       "Fixed Expenses (Monthly Breakdown)",
       startX + horizontalPadding,
-      titleY,
+      y + 10,
       {
         width: sectionWidth - horizontalPadding * 2,
         lineBreak: false,
@@ -904,7 +928,7 @@ const drawFixedExpenseSection = (
   items.forEach((item, index) => {
     const itemX = startX + horizontalPadding + index * itemWidth;
 
-    if (index === items.length - 1) {
+    if (item.isTotal) {
       doc
         .moveTo(itemX, itemsY - 4)
         .lineTo(itemX, y + sectionHeight - 10)
@@ -1046,6 +1070,339 @@ const drawBusinessSummarySection = (
     doc
       .font("Helvetica-Bold")
       .fontSize(6.5)
+      .fillColor("#475569")
+      .text(card.description, contentX, cardsY + 67, {
+        width: contentWidth,
+        lineGap: 0.5,
+      });
+  });
+
+  return y + sectionHeight + 18;
+};
+
+const getAnnualTableRowHeight = (
+  doc: PDFKit.PDFDocument,
+  row: string[],
+  options: AnnualTableRowOptions = {},
+) => {
+  const fontName = options.bold ? "Helvetica-Bold" : "Helvetica";
+  const fontSize = options.isHeader ? 7 : 8;
+
+  doc.font(fontName).fontSize(fontSize);
+
+  const cellHeights = row.map((rawCell, index) => {
+    const cell = rawCell || "-";
+    const availableWidth = ANNUAL_TABLE_COLUMN_WIDTHS[index] - 10;
+
+    const align = index === 0 || index === 6 ? "left" : "right";
+
+    return doc.heightOfString(cell, {
+      width: availableWidth,
+      align,
+      lineGap: index === 6 ? 1.5 : 0,
+    });
+  });
+
+  return Math.max(
+    options.minimumHeight ?? (options.isHeader ? 30 : 42),
+    Math.max(...cellHeights) + 14,
+  );
+};
+
+const drawAnnualTableRow = (
+  doc: PDFKit.PDFDocument,
+  y: number,
+  row: string[],
+  options: AnnualTableRowOptions = {},
+) => {
+  const rowHeight = getAnnualTableRowHeight(doc, row, options);
+
+  if (options.fillColor) {
+    doc
+      .rect(ANNUAL_TABLE_START_X, y, ANNUAL_TABLE_WIDTH, rowHeight)
+      .fill(options.fillColor);
+  }
+
+  const fontName = options.bold ? "Helvetica-Bold" : "Helvetica";
+  const fontSize = options.isHeader ? 7 : 8;
+
+  doc
+    .font(fontName)
+    .fontSize(fontSize)
+    .fillColor(options.textColor ?? "#111827");
+
+  let currentX = ANNUAL_TABLE_START_X;
+
+  row.forEach((rawCell, index) => {
+    const cell = rawCell || "-";
+    const columnWidth = ANNUAL_TABLE_COLUMN_WIDTHS[index];
+    const cellWidth = columnWidth - 10;
+
+    const align = index === 0 || index === 6 ? "left" : "right";
+
+    const lineGap = index === 6 ? 1.5 : 0;
+
+    const textHeight = doc.heightOfString(cell, {
+      width: cellWidth,
+      align,
+      lineGap,
+    });
+
+    const textY = y + Math.max(6, (rowHeight - textHeight) / 2);
+
+    doc.text(cell, currentX + 5, textY, {
+      width: cellWidth,
+      align,
+      lineGap,
+    });
+
+    currentX += columnWidth;
+  });
+
+  doc
+    .moveTo(ANNUAL_TABLE_START_X, y + rowHeight)
+    .lineTo(ANNUAL_TABLE_START_X + ANNUAL_TABLE_WIDTH, y + rowHeight)
+    .strokeColor("#e2e8f0")
+    .lineWidth(0.5)
+    .stroke();
+
+  return rowHeight;
+};
+
+const drawAnnualSummarySection = (
+  doc: PDFKit.PDFDocument,
+  y: number,
+  totals: AnnualPdfTotals,
+) => {
+  const startX = 30;
+  const sectionWidth = doc.page.width - 60;
+
+  const columns = 4;
+  const gap = 10;
+  const cardHeight = 56;
+
+  const cardWidth = (sectionWidth - gap * (columns - 1)) / columns;
+
+  const items = [
+    {
+      label: "Total Sales",
+      value: String(totals.totalSales),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+      description: "",
+    },
+    {
+      label: "Total Cash",
+      value: formatMoneyForPdf(totals.totalCash),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+      description: "",
+    },
+    {
+      label: "Total PhonePe / UPI",
+      value: formatMoneyForPdf(totals.totalPhonePe),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+      description: "",
+    },
+    {
+      label: "Total Collection",
+      value: formatMoneyForPdf(totals.totalCollection),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+      description: "",
+    },
+    {
+      label: "Total Expense",
+      value: formatMoneyForPdf(totals.totalExpense),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+      description: "",
+    },
+    {
+      label: "Total Fixed Expenses",
+      value: formatMoneyForPdf(totals.totalFixedExpense),
+      background: "#f8fafc",
+      border: "#e2e8f0",
+      valueColor: "#111827",
+      description: "Only months containing entries",
+    },
+    {
+      label: "Sales Profit",
+      value: formatMoneyForPdf(totals.totalProfit),
+      background: totals.totalProfit >= 0 ? "#f0fdf4" : "#fef2f2",
+      border: totals.totalProfit >= 0 ? "#86efac" : "#fca5a5",
+      valueColor: totals.totalProfit >= 0 ? "#16a34a" : "#dc2626",
+      description: "",
+    },
+    {
+      label: "Net Profit After Fixed Expenses",
+      value: formatMoneyForPdf(totals.netProfit),
+      background: totals.netProfit >= 0 ? "#f0fdf4" : "#fef2f2",
+      border: totals.netProfit >= 0 ? "#86efac" : "#fca5a5",
+      valueColor: totals.netProfit >= 0 ? "#16a34a" : "#dc2626",
+      description: "",
+    },
+  ];
+
+  items.forEach((item, index) => {
+    const rowIndex = Math.floor(index / columns);
+    const columnIndex = index % columns;
+
+    const cardX = startX + columnIndex * (cardWidth + gap);
+
+    const cardY = y + rowIndex * (cardHeight + gap);
+
+    doc
+      .roundedRect(cardX, cardY, cardWidth, cardHeight, 9)
+      .fillAndStroke(item.background, item.border);
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(7)
+      .fillColor("#64748b")
+      .text(item.label, cardX + 10, cardY + 8, {
+        width: cardWidth - 20,
+        lineBreak: false,
+        ellipsis: true,
+      });
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(12)
+      .fillColor(item.valueColor)
+      .text(item.value, cardX + 10, cardY + 25, {
+        width: cardWidth - 20,
+        lineBreak: false,
+        ellipsis: true,
+      });
+
+    if (item.description) {
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(5.4)
+        .fillColor("#64748b")
+        .text(item.description, cardX + 10, cardY + 43, {
+          width: cardWidth - 20,
+          lineBreak: false,
+          ellipsis: true,
+        });
+    }
+  });
+
+  return y + cardHeight * 2 + gap + 24;
+};
+
+const drawAnnualBusinessSummary = (
+  doc: PDFKit.PDFDocument,
+  y: number,
+  totals: AnnualPdfTotals,
+) => {
+  const startX = 30;
+  const sectionWidth = doc.page.width - 60;
+
+  const sectionPadding = 14;
+  const headingHeight = 18;
+  const gap = 12;
+  const cardHeight = 88;
+
+  const cardWidth = (sectionWidth - sectionPadding * 2 - gap * 2) / 3;
+
+  const sectionHeight =
+    sectionPadding + headingHeight + 10 + cardHeight + sectionPadding;
+
+  doc
+    .roundedRect(startX, y, sectionWidth, sectionHeight, 10)
+    .fillAndStroke("#ffffff", "#e2e8f0");
+
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(9)
+    .fillColor("#334155")
+    .text(
+      "ANNUAL BUSINESS SUMMARY AFTER FIXED EXPENSES",
+      startX + sectionPadding,
+      y + sectionPadding,
+      {
+        width: sectionWidth - sectionPadding * 2,
+        characterSpacing: 0.35,
+        lineBreak: false,
+      },
+    );
+
+  const cards = [
+    {
+      title: "Sales Profit\n(All Months)",
+      value: totals.totalProfit,
+      description: "Combined sales profit\nfor all listed months",
+      background: totals.totalProfit >= 0 ? "#f0fdf4" : "#fef2f2",
+      border: totals.totalProfit >= 0 ? "#86efac" : "#fca5a5",
+      color: totals.totalProfit >= 0 ? "#16a34a" : "#dc2626",
+    },
+    {
+      title: "Total Fixed\nExpenses",
+      value: totals.totalFixedExpense,
+      description: "Rent + Salary + Electricity\nfor listed months",
+      background: "#f8fbff",
+      border: "#bfdbfe",
+      color: "#334155",
+    },
+    {
+      title: "Net Profit After\nFixed Expenses",
+      value: totals.netProfit,
+      description: "Sales Profit - Total\nFixed Expenses",
+      background: totals.netProfit >= 0 ? "#f0fdf4" : "#fef2f2",
+      border: totals.netProfit >= 0 ? "#86efac" : "#fca5a5",
+      color: totals.netProfit >= 0 ? "#16a34a" : "#dc2626",
+    },
+  ];
+
+  const cardsY = y + sectionPadding + headingHeight + 10;
+
+  cards.forEach((card, index) => {
+    const cardX = startX + sectionPadding + index * (cardWidth + gap);
+
+    const contentX = cardX + 14;
+    const contentWidth = cardWidth - 28;
+
+    doc
+      .roundedRect(cardX, cardsY, cardWidth, cardHeight, 9)
+      .fillAndStroke(card.background, card.border);
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(7.5)
+      .fillColor(card.color)
+      .text(card.title, contentX, cardsY + 11, {
+        width: contentWidth,
+        lineGap: 0.5,
+      });
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(12)
+      .fillColor(card.color)
+      .text(formatMoneyForPdf(card.value), contentX, cardsY + 39, {
+        width: contentWidth,
+        lineBreak: false,
+        ellipsis: true,
+      });
+
+    doc
+      .moveTo(contentX, cardsY + 59)
+      .lineTo(cardX + cardWidth - 14, cardsY + 59)
+      .strokeColor(card.color)
+      .lineWidth(0.5)
+      .stroke();
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(6.3)
       .fillColor("#475569")
       .text(card.description, contentX, cardsY + 67, {
         width: contentWidth,
@@ -1317,12 +1674,7 @@ export const downloadMonthlyEntriesPdf = async (
     savedFixedExpense?.electricityBill ?? DEFAULT_FIXED_EXPENSE.electricityBill,
   );
 
-  const calculatedFixedExpenseTotal =
-    shopRent + shopkeeperSalary + electricityBill;
-
-  const totalFixedExpense = Number(
-    savedFixedExpense?.totalFixedExpense ?? calculatedFixedExpenseTotal,
-  );
+  const totalFixedExpense = shopRent + shopkeeperSalary + electricityBill;
 
   const fixedExpense: FixedExpensePdfData = {
     shopRent,
@@ -1380,8 +1732,6 @@ export const downloadMonthlyEntriesPdf = async (
     netProfit,
   });
 
-  doc.x = 40;
-
   doc
     .font("Helvetica-Bold")
     .fontSize(12)
@@ -1393,7 +1743,6 @@ export const downloadMonthlyEntriesPdf = async (
   y = drawAverageSection(doc, y, averages);
 
   y = ensurePdfSpace(doc, y, 100);
-
   y = drawFixedExpenseSection(doc, y, fixedExpense);
 
   const headers = [
@@ -1408,15 +1757,13 @@ export const downloadMonthlyEntriesPdf = async (
   ];
 
   const drawTableHeader = () => {
-    const headerHeight = drawTableRow(doc, y, headers, {
+    y += drawTableRow(doc, y, headers, {
       bold: true,
       fillColor: "#f1f5f9",
       textColor: "#334155",
       isHeader: true,
       minimumHeight: 28,
     });
-
-    y += headerHeight;
   };
 
   const initialHeaderHeight = getPdfTableRowHeight(doc, headers, {
@@ -1455,13 +1802,10 @@ export const downloadMonthlyEntriesPdf = async (
     if (y + requiredRowHeight > getPdfContentBottom(doc)) {
       doc.addPage();
       y = PDF_PAGE_START_Y;
-
       drawTableHeader();
     }
 
-    const actualRowHeight = drawTableRow(doc, y, tableRow, rowOptions);
-
-    y += actualRowHeight;
+    y += drawTableRow(doc, y, tableRow, rowOptions);
   });
 
   const totalsRow = [
@@ -1483,7 +1827,6 @@ export const downloadMonthlyEntriesPdf = async (
   if (y + totalsRowHeight > getPdfContentBottom(doc)) {
     doc.addPage();
     y = PDF_PAGE_START_Y;
-
     drawTableHeader();
   }
 
@@ -1495,16 +1838,329 @@ export const downloadMonthlyEntriesPdf = async (
   });
 
   y += 18;
+  y = ensurePdfSpace(doc, y, 160);
 
-  const businessSummaryRequiredHeight = 160;
-
-  y = ensurePdfSpace(doc, y, businessSummaryRequiredHeight);
-
-  y = drawBusinessSummarySection(doc, y, {
+  drawBusinessSummarySection(doc, y, {
     salesProfit: totals.profit,
     fixedExpense: fixedExpense.totalFixedExpense,
     netProfit,
   });
+
+  drawPdfFooter(doc);
+
+  doc.end();
+};
+
+export const downloadYearlyEntriesPdf = async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  const year = Number(req.query.year);
+
+  if (!year || !Number.isInteger(year)) {
+    res.status(400).json({
+      message: "A valid year query param is required",
+    });
+    return;
+  }
+
+  const yearStart = `${year}-01-01`;
+  const yearEnd = `${year + 1}-01-01`;
+
+  const objectUserId = new mongoose.Types.ObjectId(userId);
+
+  const [monthlyAggregations, fixedExpenseDocuments] = await Promise.all([
+    Entry.aggregate<AnnualEntryAggregation>([
+      {
+        $match: {
+          userId: objectUserId,
+          date: {
+            $gte: yearStart,
+            $lt: yearEnd,
+          },
+        },
+      },
+      {
+        $addFields: {
+          monthNumber: {
+            $toInt: {
+              $substrBytes: ["$date", 5, 2],
+            },
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$monthNumber",
+          entryCount: {
+            $sum: 1,
+          },
+          totalSales: {
+            $sum: "$salesCount",
+          },
+          totalCash: {
+            $sum: "$cash",
+          },
+          totalPhonePe: {
+            $sum: "$phonePe",
+          },
+          totalCollection: {
+            $sum: "$total",
+          },
+          totalExpense: {
+            $sum: "$expense",
+          },
+          totalProfit: {
+            $sum: "$profit",
+          },
+        },
+      },
+      {
+        $sort: {
+          _id: 1,
+        },
+      },
+    ]),
+
+    FixedMonthlyExpense.find({
+      userId,
+      year,
+    }).lean(),
+  ]);
+
+  if (monthlyAggregations.length === 0) {
+    res.status(404).json({
+      message: `No entries found for ${year}`,
+    });
+    return;
+  }
+
+  const fixedExpenseByMonth = new Map(
+    fixedExpenseDocuments.map((item) => [Number(item.month), item]),
+  );
+
+  const rows: AnnualMonthPdfRow[] = monthlyAggregations.map((aggregation) => {
+    const month = Number(aggregation._id);
+
+    const savedFixedExpense = fixedExpenseByMonth.get(month);
+
+    const shopRent = Number(
+      savedFixedExpense?.shopRent ?? DEFAULT_FIXED_EXPENSE.shopRent,
+    );
+
+    const shopkeeperSalary = Number(
+      savedFixedExpense?.shopkeeperSalary ??
+        DEFAULT_FIXED_EXPENSE.shopkeeperSalary,
+    );
+
+    const electricityBill = Number(
+      savedFixedExpense?.electricityBill ??
+        DEFAULT_FIXED_EXPENSE.electricityBill,
+    );
+
+    /*
+     * Always recalculate to keep it consistent with the individual
+     * fixed-expense components.
+     */
+    const totalFixedExpense = shopRent + shopkeeperSalary + electricityBill;
+
+    const totalProfit = Number(aggregation.totalProfit) || 0;
+
+    return {
+      month,
+      monthName: getMonthName(month),
+      entryCount: Number(aggregation.entryCount) || 0,
+      totalSales: Number(aggregation.totalSales) || 0,
+      totalCash: Number(aggregation.totalCash) || 0,
+      totalPhonePe: Number(aggregation.totalPhonePe) || 0,
+      totalCollection: Number(aggregation.totalCollection) || 0,
+      totalExpense: Number(aggregation.totalExpense) || 0,
+      totalProfit,
+      shopRent,
+      shopkeeperSalary,
+      electricityBill,
+      totalFixedExpense,
+      netProfit: totalProfit - totalFixedExpense,
+    };
+  });
+
+  const totals = rows.reduce<AnnualPdfTotals>(
+    (acc, row) => {
+      acc.totalSales += row.totalSales;
+      acc.totalCash += row.totalCash;
+      acc.totalPhonePe += row.totalPhonePe;
+      acc.totalCollection += row.totalCollection;
+      acc.totalExpense += row.totalExpense;
+      acc.totalProfit += row.totalProfit;
+      acc.totalFixedExpense += row.totalFixedExpense;
+      acc.netProfit += row.netProfit;
+
+      return acc;
+    },
+    {
+      totalSales: 0,
+      totalCash: 0,
+      totalPhonePe: 0,
+      totalCollection: 0,
+      totalExpense: 0,
+      totalProfit: 0,
+      totalFixedExpense: 0,
+      netProfit: 0,
+    },
+  );
+
+  const fileName = `SaleLedger_${year}_Annual_Report.pdf`;
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+
+  const doc = new PDFDocument({
+    size: "A4",
+    layout: "landscape",
+    margins: {
+      top: 30,
+      right: 30,
+      bottom: 40,
+      left: 30,
+    },
+    bufferPages: true,
+  });
+
+  doc.pipe(res);
+
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(20)
+    .fillColor("#111827")
+    .text("Sale Ledger Annual Report", {
+      align: "center",
+    });
+
+  doc
+    .moveDown(0.25)
+    .font("Helvetica")
+    .fontSize(14)
+    .fillColor("#475569")
+    .text(String(year), {
+      align: "center",
+    });
+
+  doc.moveDown(0.8);
+
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(12)
+    .fillColor("#111827")
+    .text("Annual Summary");
+
+  doc.moveDown(0.5);
+
+  let y = doc.y;
+
+  y = drawAnnualSummarySection(doc, y, totals);
+
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(12)
+    .fillColor("#111827")
+    .text("Monthly Summary", ANNUAL_TABLE_START_X, y);
+
+  y += 24;
+
+  const headers = [
+    "Month",
+    "Sales",
+    "Cash",
+    "PhonePe",
+    "Total",
+    "Expense",
+    "Fixed Monthly Expenses",
+    "Profit",
+    "Net Profit",
+  ];
+
+  const drawAnnualHeader = () => {
+    y += drawAnnualTableRow(doc, y, headers, {
+      bold: true,
+      isHeader: true,
+      minimumHeight: 30,
+      fillColor: "#f1f5f9",
+      textColor: "#334155",
+    });
+  };
+
+  drawAnnualHeader();
+
+  rows.forEach((row) => {
+    const tableRow = [
+      row.monthName,
+      String(row.totalSales),
+      formatMoneyForPdf(row.totalCash),
+      formatMoneyForPdf(row.totalPhonePe),
+      formatMoneyForPdf(row.totalCollection),
+      formatMoneyForPdf(row.totalExpense),
+      `${formatMoneyForPdf(row.totalFixedExpense)}\nRent ${formatMoneyForPdf(
+        row.shopRent,
+      )} • Salary ${formatMoneyForPdf(
+        row.shopkeeperSalary,
+      )} • EB ${formatMoneyForPdf(row.electricityBill)}`,
+      formatMoneyForPdf(row.totalProfit),
+      formatMoneyForPdf(row.netProfit),
+    ];
+
+    const requiredHeight = getAnnualTableRowHeight(doc, tableRow, {
+      minimumHeight: 42,
+    });
+
+    if (y + requiredHeight > getPdfContentBottom(doc)) {
+      doc.addPage();
+      y = ANNUAL_PAGE_START_Y;
+      drawAnnualHeader();
+    }
+
+    y += drawAnnualTableRow(doc, y, tableRow, {
+      minimumHeight: 42,
+    });
+  });
+
+  const totalsRow = [
+    "Totals",
+    String(totals.totalSales),
+    formatMoneyForPdf(totals.totalCash),
+    formatMoneyForPdf(totals.totalPhonePe),
+    formatMoneyForPdf(totals.totalCollection),
+    formatMoneyForPdf(totals.totalExpense),
+    formatMoneyForPdf(totals.totalFixedExpense),
+    formatMoneyForPdf(totals.totalProfit),
+    formatMoneyForPdf(totals.netProfit),
+  ];
+
+  const totalsRowHeight = getAnnualTableRowHeight(doc, totalsRow, {
+    bold: true,
+    minimumHeight: 34,
+  });
+
+  if (y + totalsRowHeight > getPdfContentBottom(doc)) {
+    doc.addPage();
+    y = ANNUAL_PAGE_START_Y;
+    drawAnnualHeader();
+  }
+
+  y += drawAnnualTableRow(doc, y, totalsRow, {
+    bold: true,
+    minimumHeight: 34,
+    fillColor: "#f8fafc",
+    textColor: "#111827",
+  });
+
+  y += 20;
+
+  const annualBusinessSummaryHeight = 150;
+
+  if (y + annualBusinessSummaryHeight > getPdfContentBottom(doc)) {
+    doc.addPage();
+    y = ANNUAL_PAGE_START_Y;
+  }
+
+  drawAnnualBusinessSummary(doc, y, totals);
 
   drawPdfFooter(doc);
 

@@ -6,6 +6,9 @@ import rateLimit from "express-rate-limit";
 import authRoutes from "./routes/auth.routes";
 import entryRoutes from "./routes/entry.routes";
 import fixedMonthlyExpenseRoutes from "./routes/fixedMonthlyExpense.routes";
+import purchaseCategoryRoutes from "./routes/purchaseCategory.routes";
+import purchaseProductRoutes from "./routes/purchaseProduct.routes";
+import purchaseRoutes from "./routes/purchase.routes";
 import { connectDB } from "./config/db";
 import {
   errorMiddleware,
@@ -69,6 +72,9 @@ app.use(async (_req, _res, next) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/entries", entryRoutes);
 app.use("/api/fixed-expenses", fixedMonthlyExpenseRoutes);
+app.use("/api/purchase-categories", purchaseCategoryRoutes);
+app.use("/api/purchase-products", purchaseProductRoutes);
+app.use("/api/purchases", purchaseRoutes);
 
 app.use(notFoundMiddleware);
 app.use(errorMiddleware);

@@ -75,6 +75,30 @@ const formatReportDate = (value: string) => {
   return `${String(day).padStart(2, "0")} ${monthName} ${year}`;
 };
 
+const getDairyLitres = (
+  categoryName: string,
+  productName: string,
+  quantity: number,
+  unit: string,
+) => {
+  if (
+    categoryName.trim().toLocaleLowerCase("en-IN") !== "dairy" ||
+    unit.trim().toLocaleLowerCase("en-IN") !== "packets"
+  ) {
+    return null;
+  }
+
+  const volumeMatch = productName.match(/\b(250|500)\s*ml\b/i);
+  if (!volumeMatch) return null;
+
+  return quantity * (Number(volumeMatch[1]) / 1000);
+};
+
+const formatLitres = (value: number) =>
+  `${new Intl.NumberFormat("en-IN", {
+    maximumFractionDigits: 3,
+  }).format(value)} L`;
+
 const getDatesInRange = (from: string, to: string) => {
   const dates: string[] = [];
   const current = new Date(`${from}T00:00:00Z`);
@@ -271,7 +295,15 @@ const drawCategoryBreakdown = (
     drawProductHeader();
 
     for (const product of category.products) {
-      if (y + 29 > CONTENT_BOTTOM) {
+      const dairyLitres = getDairyLitres(
+        category.categoryName,
+        product.productName,
+        product.quantity,
+        product.unit,
+      );
+      const rowHeight = dairyLitres === null ? 29 : 33;
+
+      if (y + rowHeight > CONTENT_BOTTOM) {
         y = addPage(doc);
         doc
           .font("Helvetica-Bold")
@@ -288,6 +320,27 @@ const drawCategoryBreakdown = (
       ];
       let x = PAGE_MARGIN;
       values.forEach((value, index) => {
+        if (index === 1 && dairyLitres !== null) {
+          doc
+            .font("Helvetica-Bold")
+            .fontSize(8)
+            .fillColor("#111827")
+            .text(value, x + 6, y + 5, {
+              width: productColumns[index] - 12,
+              lineBreak: false,
+            });
+          doc
+            .font("Helvetica-Bold")
+            .fontSize(6.3)
+            .fillColor("#16a34a")
+            .text(formatLitres(dairyLitres), x + 6, y + 17, {
+              width: productColumns[index] - 12,
+              lineBreak: false,
+            });
+          x += productColumns[index];
+          return;
+        }
+
         doc
           .font(index === 0 || index === 2 ? "Helvetica-Bold" : "Helvetica")
           .fontSize(index === 0 ? 7.5 : 8)
@@ -300,12 +353,12 @@ const drawCategoryBreakdown = (
         x += productColumns[index];
       });
       doc
-        .moveTo(PAGE_MARGIN, y + 29)
-        .lineTo(PAGE_MARGIN + CONTENT_WIDTH, y + 29)
+        .moveTo(PAGE_MARGIN, y + rowHeight)
+        .lineTo(PAGE_MARGIN + CONTENT_WIDTH, y + rowHeight)
         .strokeColor("#e2e8f0")
         .lineWidth(0.5)
         .stroke();
-      y += 29;
+      y += rowHeight;
     }
     y += 14;
   }

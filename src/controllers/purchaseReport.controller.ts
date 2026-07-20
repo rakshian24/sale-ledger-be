@@ -72,7 +72,7 @@ const formatReportDate = (value: string) => {
     "Nov",
     "Dec",
   ][month - 1];
-  return `${String(day).padStart(2, "0")}/${monthName}/${year}`;
+  return `${String(day).padStart(2, "0")} ${monthName} ${year}`;
 };
 
 const getDatesInRange = (from: string, to: string) => {
@@ -122,7 +122,11 @@ const drawSummary = (
   const gap = 10;
   const cardWidth = (CONTENT_WIDTH - gap * 2) / 3;
   const cards = [
-    { label: "Total purchased", value: formatMoney(data.totalAmount), meta: "" },
+    {
+      label: "Total purchased",
+      value: formatMoney(data.totalAmount),
+      meta: "",
+    },
     { label: "Purchase entries", value: String(data.entryCount), meta: "" },
     {
       label: "Highest-spend category",
@@ -169,9 +173,11 @@ const drawDaysPurchased = (
 ) => {
   const columns = 15;
   const rows = Math.ceil(dates.length / columns);
-  const height = 48 + rows * 25;
+  const height = 29 + rows * 25;
   y = ensureSpace(doc, y, height + 8);
-  const purchasedCount = dates.filter((date) => purchasedDates.has(date)).length;
+  const purchasedCount = dates.filter((date) =>
+    purchasedDates.has(date),
+  ).length;
 
   doc
     .roundedRect(PAGE_MARGIN, y, CONTENT_WIDTH, height, 9)
@@ -428,7 +434,9 @@ export const downloadPurchaseReportPdf = async (
       .lean()) as PurchaseReportRow[];
 
     if (purchases.length === 0) {
-      res.status(404).json({ message: "No purchases found for the selected date range" });
+      res
+        .status(404)
+        .json({ message: "No purchases found for the selected date range" });
       return;
     }
 
@@ -443,9 +451,10 @@ export const downloadPurchaseReportPdf = async (
       };
       category.totalAmount += purchase.totalAmount;
       category.entryCount += 1;
-      const productKey = `${String(purchase.productId)}-${purchase.unit}`;
       let product = category.products.find(
-        (item) => `${item.productName}-${item.unit}` === `${purchase.productName}-${purchase.unit}`,
+        (item) =>
+          `${item.productName}-${item.unit}` ===
+          `${purchase.productName}-${purchase.unit}`,
       );
       if (!product) {
         product = {
@@ -457,7 +466,6 @@ export const downloadPurchaseReportPdf = async (
         };
         category.products.push(product);
       }
-      void productKey;
       product.quantity += purchase.quantity;
       product.totalAmount += purchase.totalAmount;
       product.entryCount += 1;
@@ -476,7 +484,9 @@ export const downloadPurchaseReportPdf = async (
       0,
     );
     const dates = getDatesInRange(range.from, range.to);
-    const purchasedDates = new Set(purchases.map((purchase) => purchase.purchaseDate));
+    const purchasedDates = new Set(
+      purchases.map((purchase) => purchase.purchaseDate),
+    );
 
     const fileName = `purchase-report-${range.from}-to-${range.to}.pdf`;
     res.setHeader("Content-Type", "application/pdf");
@@ -491,12 +501,20 @@ export const downloadPurchaseReportPdf = async (
 
     doc
       .font("Helvetica-Bold")
-      .fontSize(17)
+      .fontSize(18)
       .fillColor("#111827")
-      .text(
-        `Purchase Report for ${formatReportDate(range.from)} - ${formatReportDate(range.to)}`,
-        { align: "center" },
-      );
+      .text("Purchase Report", {
+        align: "center",
+      });
+
+    doc
+      .font("Helvetica")
+      .fontSize(11)
+      .fillColor("#475569")
+      .text(`${formatReportDate(range.from)} - ${formatReportDate(range.to)}`, {
+        align: "center",
+      });
+
     let y = doc.y + 24;
     y = drawSectionTitle(doc, y, "Summary");
     y = drawSummary(doc, y, {
@@ -519,7 +537,10 @@ export const downloadPurchaseReportPdf = async (
   } catch (error) {
     if (!res.headersSent) {
       res.status(400).json({
-        message: error instanceof Error ? error.message : "Unable to create purchase report",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to create purchase report",
       });
     }
   }

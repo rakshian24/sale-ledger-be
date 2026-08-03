@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import mongoose from "mongoose";
 import { z } from "zod";
 import { Purchase } from "../models/Purchase.model";
 import { PurchaseCategory } from "../models/PurchaseCategory.model";
@@ -8,6 +9,8 @@ const productInput = z.object({
   name: z.string().trim().min(1).max(120),
   categoryId: z.string().min(1),
   defaultUnit: z.string().trim().min(1).max(30).default("kg"),
+  retailUnit: z.string().trim().min(1).max(30).optional(),
+  unitsPerPurchaseUnit: z.number().int().positive().optional().default(1),
 });
 
 const getUserId = (req: Request) => {
@@ -27,7 +30,42 @@ export const getPurchaseProducts = async (req: Request, res: Response) => {
       .populate("categoryId", "name")
       .sort({ name: 1 })
       .lean();
-    res.json({ products });
+    const latestPurchases = await Purchase.aggregate<{
+      _id: mongoose.Types.ObjectId;
+      latestCostPrice: number;
+      latestPurchaseDate: string;
+      latestPurchaseUnit: string;
+    }>([
+      {
+        $match: {
+          userId: new mongoose.Types.ObjectId(userId),
+          ...(req.query.categoryId
+            ? { categoryId: new mongoose.Types.ObjectId(String(req.query.categoryId)) }
+            : {}),
+        },
+      },
+      { $sort: { purchaseDate: -1, createdAt: -1 } },
+      {
+        $group: {
+          _id: "$productId",
+          latestCostPrice: { $first: "$unitPrice" },
+          latestPurchaseDate: { $first: "$purchaseDate" },
+          latestPurchaseUnit: { $first: "$unit" },
+        },
+      },
+    ]);
+    const latestPurchaseByProduct = new Map(
+      latestPurchases.map((purchase) => [String(purchase._id), purchase]),
+    );
+    const productsWithLatestCost = products.map((product) => ({
+      ...product,
+      ...(latestPurchaseByProduct.get(String(product._id)) ?? {
+        latestCostPrice: null,
+        latestPurchaseDate: null,
+        latestPurchaseUnit: null,
+      }),
+    }));
+    res.json({ products: productsWithLatestCost });
   } catch (error) {
     res.status(400).json({ message: message(error, "Unable to get products") });
   }
@@ -51,6 +89,8 @@ export const createPurchaseProduct = async (req: Request, res: Response) => {
       name: data.name,
       normalizedName: data.name.toLocaleLowerCase("en-IN"),
       defaultUnit: data.defaultUnit,
+      retailUnit: data.retailUnit || data.defaultUnit,
+      unitsPerPurchaseUnit: data.unitsPerPurchaseUnit,
     });
     res.status(201).json({ product });
   } catch (error) {
@@ -77,6 +117,8 @@ export const updatePurchaseProduct = async (req: Request, res: Response) => {
         normalizedName: data.name.toLocaleLowerCase("en-IN"),
         categoryId: category._id,
         defaultUnit: data.defaultUnit,
+        retailUnit: data.retailUnit || data.defaultUnit,
+        unitsPerPurchaseUnit: data.unitsPerPurchaseUnit,
       },
       { new: true, runValidators: true },
     );

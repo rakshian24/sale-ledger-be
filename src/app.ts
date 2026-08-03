@@ -9,6 +9,8 @@ import fixedMonthlyExpenseRoutes from "./routes/fixedMonthlyExpense.routes";
 import purchaseCategoryRoutes from "./routes/purchaseCategory.routes";
 import purchaseProductRoutes from "./routes/purchaseProduct.routes";
 import purchaseRoutes from "./routes/purchase.routes";
+import saleTransactionRoutes from "./routes/saleTransaction.routes";
+import inventoryRoutes from "./routes/inventory.routes";
 import { connectDB } from "./config/db";
 import {
   errorMiddleware,
@@ -75,6 +77,8 @@ app.use("/api/fixed-expenses", fixedMonthlyExpenseRoutes);
 app.use("/api/purchase-categories", purchaseCategoryRoutes);
 app.use("/api/purchase-products", purchaseProductRoutes);
 app.use("/api/purchases", purchaseRoutes);
+app.use("/api/sale-transactions", saleTransactionRoutes);
+app.use("/api/inventory", inventoryRoutes);
 
 app.use(notFoundMiddleware);
 app.use(errorMiddleware);

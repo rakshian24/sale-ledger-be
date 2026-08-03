@@ -33,6 +33,22 @@ const purchaseProductSchema = new mongoose.Schema(
       maxlength: 30,
       default: "kg",
     },
+    retailUnit: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+      maxlength: 30,
+      default: function () {
+        return this.defaultUnit || "unit";
+      },
+    },
+    unitsPerPurchaseUnit: {
+      type: Number,
+      required: true,
+      min: 1,
+      default: 1,
+    },
   },
   { timestamps: true },
 );
@@ -45,6 +61,7 @@ purchaseProductSchema.index(
 purchaseProductSchema.pre("validate", function normalizeProductName(next) {
   this.name = this.name?.trim();
   this.normalizedName = this.name?.toLocaleLowerCase("en-IN");
+  this.retailUnit = this.retailUnit?.trim() || this.defaultUnit;
   next();
 });
 

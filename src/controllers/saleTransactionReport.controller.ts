@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import PDFDocument from "pdfkit";
+import path from "path";
 import { z } from "zod";
 import { PurchaseProduct } from "../models/PurchaseProduct.model";
 import { SaleTransaction } from "../models/SaleTransaction.model";
@@ -10,6 +11,7 @@ const rangeSchema = z
   .object({
     from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    language: z.enum(["en", "kn"]).default("en"),
   })
   .refine((range) => range.from <= range.to, {
     message: "from must be before or equal to to",
@@ -20,6 +22,209 @@ const PAGE_WIDTH = 841.89;
 const PAGE_HEIGHT = 595.28;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
 const CONTENT_BOTTOM = PAGE_HEIGHT - 42;
+type ReportLanguage = "en" | "kn";
+
+const KANNADA_BOLD_FONT_PATH = path.resolve(
+  __dirname,
+  "../../assets/fonts/NotoSansKannadaCombined-Bold.ttf",
+);
+
+const kannadaLabels: Record<string, string> = {
+  "Sales Register Report": "ಮಾರಾಟ ದಾಖಲಾತಿ ವರದಿ",
+  "Customer sales": "ಗ್ರಾಹಕರ ಮಾರಾಟಗಳು",
+  Revenue: "ಆದಾಯ",
+  "Cost of goods": "ಸರಕುಗಳ ವೆಚ್ಚ",
+  "Gross profit": "ಒಟ್ಟು ಲಾಭ",
+  "Cash / UPI": "ನಗದು / ಯುಪಿಐ",
+  "Credit sales": "ಸಾಲದ ಮಾರಾಟ",
+  "Detailed customer sales": "ವಿವರವಾದ ಗ್ರಾಹಕರ ಮಾರಾಟ",
+  Date: "ದಿನಾಂಕ",
+  Sale: "ಮಾರಾಟ",
+  Customer: "ಗ್ರಾಹಕ",
+  Payment: "ಪಾವತಿ",
+  Product: "ಉತ್ಪನ್ನ",
+  Qty: "ಪ್ರಮಾಣ",
+  "Cost/unit": "ಘಟಕ ವೆಚ್ಚ",
+  "Sell/unit": "ಘಟಕ ಮಾರಾಟ ಬೆಲೆ",
+  Cost: "ವೆಚ್ಚ",
+  Total: "ಒಟ್ಟು",
+  Profit: "ಲಾಭ",
+  "Walk-in": "ನೇರ ಗ್ರಾಹಕ",
+  "Sales by category": "ವರ್ಗವಾರು ಮಾರಾಟ",
+  "Sales by category (continued)": "ವರ್ಗವಾರು ಮಾರಾಟ (ಮುಂದುವರಿದಿದೆ)",
+  "total revenue": "ಒಟ್ಟು ಆದಾಯ",
+  Category: "ವರ್ಗ",
+  Sales: "ಮಾರಾಟಗಳು",
+  Entries: "ನಮೂದುಗಳು",
+  Share: "ಪಾಲು",
+  "Sales performance highlights": "ಮಾರಾಟ ಕಾರ್ಯಕ್ಷಮತೆಯ ಮುಖ್ಯಾಂಶಗಳು",
+  "Top quantity sold": "ಅತಿ ಹೆಚ್ಚು ಮಾರಾಟವಾದ ಪ್ರಮಾಣ",
+  "Most profitable sale": "ಹೆಚ್ಚು ಲಾಭದಾಯಕ ಮಾರಾಟ",
+  "Period profit": "ಅವಧಿಯ ಲಾಭ",
+  "No sales": "ಮಾರಾಟ ಇಲ್ಲ",
+  "Products sold in selected period": "ಆಯ್ದ ಅವಧಿಯಲ್ಲಿ ಮಾರಾಟವಾದ ಉತ್ಪನ್ನಗಳು",
+  "Quantity sold": "ಮಾರಾಟವಾದ ಪ್ರಮಾಣ",
+  "Sale entries": "ಮಾರಾಟ ನಮೂದುಗಳು",
+  product: "ಉತ್ಪನ್ನ",
+  products: "ಉತ್ಪನ್ನಗಳು",
+  continued: "ಮುಂದುವರಿದಿದೆ",
+  revenue: "ಆದಾಯ",
+  "Sale Ledger - Sales Register": "ಸೇಲ್ ಲೆಡ್ಜರ್ - ಮಾರಾಟ ದಾಖಲಾತಿ",
+  Page: "ಪುಟ",
+  of: "ರಲ್ಲಿ",
+};
+
+const translate = (language: ReportLanguage, label: string) =>
+  language === "kn" ? kannadaLabels[label] || label : label;
+
+const translateUnit = (language: ReportLanguage, unit: string) => {
+  if (language !== "kn") return unit;
+  const units: Record<string, string> = {
+    packet: "ಪ್ಯಾಕೆಟ್",
+    packets: "ಪ್ಯಾಕೆಟ್‌ಗಳು",
+    kg: "ಕೆಜಿ",
+    g: "ಗ್ರಾಂ",
+    bottle: "ಬಾಟಲಿ",
+    bottles: "ಬಾಟಲಿಗಳು",
+    case: "ಕೇಸ್",
+    cases: "ಕೇಸ್‌ಗಳು",
+    litre: "ಲೀಟರ್",
+    litres: "ಲೀಟರ್",
+    l: "ಲೀಟರ್",
+    piece: "ತುಂಡು",
+    pieces: "ತುಂಡುಗಳು",
+    bunch: "ಕಟ್ಟು",
+    bunches: "ಕಟ್ಟುಗಳು",
+    item: "ವಸ್ತು",
+    items: "ವಸ್ತುಗಳು",
+    box: "ಪೆಟ್ಟಿಗೆ",
+    boxes: "ಪೆಟ್ಟಿಗೆಗಳು",
+  };
+  return units[unit.trim().toLowerCase()] || unit;
+};
+
+const translatePayment = (language: ReportLanguage, mode: string) => {
+  if (language !== "kn") return mode.toUpperCase();
+  return (
+    (
+      {
+        cash: "ನಗದು",
+        upi: "ಯುಪಿಐ",
+        mixed: "ನಗದು + ಯುಪಿಐ",
+        credit: "ಸಾಲ",
+      } as Record<string, string>
+    )[mode.toLowerCase()] || mode
+  );
+};
+
+const translateCategory = (language: ReportLanguage, category: string) => {
+  if (language !== "kn") return category;
+  return (
+    (
+      {
+        dairy: "ಹಾಲು ಉತ್ಪನ್ನಗಳು",
+        vegetables: "ತರಕಾರಿಗಳು",
+        fruits: "ಹಣ್ಣುಗಳು",
+        water: "ನೀರು",
+        eggs: "ಮೊಟ್ಟೆಗಳು",
+        noodles: "ನೂಡಲ್ಸ್",
+        "bike petrol": "ಬೈಕ್ ಪೆಟ್ರೋಲ್",
+        soppu: "ಸೊಪ್ಪು",
+        "plastic covers": "ಪ್ಲಾಸ್ಟಿಕ್ ಕವರ್‌ಗಳು",
+        "garbage bags": "ಕಸದ ಚೀಲಗಳು",
+        uncategorized: "ವರ್ಗೀಕರಿಸದ",
+      } as Record<string, string>
+    )[category.trim().toLowerCase()] || category
+  );
+};
+
+const kannadaProductNames: Record<string, string> = {
+  "9*13 cover": "9×13 ಕವರ್",
+  agarbatthi: "ಅಗರಬತ್ತಿ",
+  apple: "ಸೇಬು",
+  avarekayi: "ಅವರೆಕಾಯಿ",
+  "avarekayi - hitaku bele": "ಅವರೆಕಾಯಿ - ಹಿತ್ಕು ಬೇಳೆ",
+  "bajji chilly": "ಬಜ್ಜಿ ಮೆಣಸಿನಕಾಯಿ",
+  banana: "ಬಾಳೆಹಣ್ಣು",
+  beans: "ಬೀನ್ಸ್",
+  beetroot: "ಬೀಟ್‌ರೂಟ್",
+  "bike petrol": "ಬೈಕ್ ಪೆಟ್ರೋಲ್",
+  "bitter gourd": "ಹಾಗಲಕಾಯಿ",
+  "bottle gourd": "ಸೊರೆಕಾಯಿ",
+  brinjal: "ಬದನೆಕಾಯಿ",
+  "buttermilk 200ml": "ಮಜ್ಜಿಗೆ 200 ಮಿ.ಲೀ.",
+  "button mushroom": "ಬಟನ್ ಮಶ್ರೂಮ್",
+  cabbage: "ಎಲೆಕೋಸು",
+  cailiflower: "ಹೂಕೋಸು",
+  capsicum: "ದಪ್ಪ ಮೆಣಸಿನಕಾಯಿ",
+  carrot: "ಕ್ಯಾರೆಟ್",
+  chilly: "ಹಸಿಮೆಣಸಿನಕಾಯಿ",
+  coconut: "ತೆಂಗಿನಕಾಯಿ",
+  cucumber: "ಸೌತೆಕಾಯಿ",
+  "curd 200ml": "ಮೊಸರು 200 ಮಿ.ಲೀ.",
+  "curd 500ml": "ಮೊಸರು 500 ಮಿ.ಲೀ.",
+  "deepa oil": "ದೀಪಾ ಎಣ್ಣೆ",
+  eggs: "ಮೊಟ್ಟೆಗಳು",
+  electricals: "ವಿದ್ಯುತ್ ಸಾಮಗ್ರಿಗಳು",
+  "gadre tilapia fish fingers 200g": "ಗಾಡ್ರೆ ಟಿಲಾಪಿಯಾ ಫಿಶ್ ಫಿಂಗರ್ಸ್ 200 ಗ್ರಾಂ",
+  "garbage bags": "ಕಸದ ಚೀಲಗಳು",
+  garlic: "ಬೆಳ್ಳುಳ್ಳಿ",
+  ginger: "ಶುಂಠಿ",
+  "godrej yummiez chicken nuggets 500g":
+    "ಗೋದ್ರೆಜ್ ಯಮ್ಮೀಸ್ ಚಿಕನ್ ನಗೆಟ್ಸ್ 500 ಗ್ರಾಂ",
+  "good life 200ml": "ಗುಡ್ ಲೈಫ್ 200 ಮಿ.ಲೀ.",
+  grapes: "ದ್ರಾಕ್ಷಿ",
+  "ground nut": "ಕಡಲೆಕಾಯಿ",
+  "kissan tomato ketchup 95g": "ಕಿಸ್ಸಾನ್ ಟೊಮ್ಯಾಟೊ ಕೆಚಪ್ 95 ಗ್ರಾಂ",
+  kiwi: "ಕಿವಿ",
+  kothmiri: "ಕೊತ್ತಂಬರಿ ಸೊಪ್ಪು",
+  "lady's finger": "ಬೆಂಡೆಕಾಯಿ",
+  lemon: "ನಿಂಬೆಹಣ್ಣು",
+  "maggie noodles": "ಮ್ಯಾಗಿ ನೂಡಲ್ಸ್",
+  "maggie noodles 140g": "ಮ್ಯಾಗಿ ನೂಡಲ್ಸ್ 140 ಗ್ರಾಂ",
+  "maggie noodles 280g": "ಮ್ಯಾಗಿ ನೂಡಲ್ಸ್ 280 ಗ್ರಾಂ",
+  "maggie noodles 420g": "ಮ್ಯಾಗಿ ನೂಡಲ್ಸ್ 420 ಗ್ರಾಂ",
+  "mc cain french fries": "ಮ್ಯಾಕ್‌ಕೇನ್ ಫ್ರೆಂಚ್ ಫ್ರೈಸ್",
+  "mc cain masala french fries": "ಮ್ಯಾಕ್‌ಕೇನ್ ಮಸಾಲಾ ಫ್ರೆಂಚ್ ಫ್ರೈಸ್",
+  "milk 500ml": "ಹಾಲು 500 ಮಿ.ಲೀ.",
+  "milky mist butter 10gms": "ಮಿಲ್ಕಿ ಮಿಸ್ಟ್ ಬೆಣ್ಣೆ 10 ಗ್ರಾಂ",
+  "milky mist cheese 200g": "ಮಿಲ್ಕಿ ಮಿಸ್ಟ್ ಚೀಸ್ 200 ಗ್ರಾಂ",
+  "milky mist panner 200g": "ಮಿಲ್ಕಿ ಮಿಸ್ಟ್ ಪನೀರ್ 200 ಗ್ರಾಂ",
+  mosambi: "ಮೋಸಂಬಿ",
+  "musk melon": "ಖರ್ಬೂಜ",
+  "mys. brinjal": "ಮೈಸೂರು ಬದನೆಕಾಯಿ",
+  "nandini panner": "ನಂದಿನಿ ಪನೀರ್",
+  nookal: "ನುಗ್ಗೆಕೋಸು",
+  onion: "ಈರುಳ್ಳಿ",
+  orange: "ಕಿತ್ತಳೆ",
+  peas: "ಬಟಾಣಿ",
+  pineapple: "ಅನಾನಸ್",
+  pomegranate: "ದಾಳಿಂಬೆ",
+  potato: "ಆಲೂಗಡ್ಡೆ",
+  pudina: "ಪುದೀನಾ ಸೊಪ್ಪು",
+  radish: "ಮೂಲಂಗಿ",
+  "ridge gourd": "ಹೀರೇಕಾಯಿ",
+  sapota: "ಸಪೋಟಾ",
+  "seeme badanekayi": "ಸೀಮೆ ಬದನೆಕಾಯಿ",
+  sugar: "ಸಕ್ಕರೆ",
+  "sugar cane": "ಕಬ್ಬು",
+  "sweet potato": "ಗೆಣಸಿನಕಾಯಿ",
+  tomato: "ಟೊಮ್ಯಾಟೊ",
+  "water 1 l": "ನೀರು 1 ಲೀಟರ್",
+  "water 2 l": "ನೀರು 2 ಲೀಟರ್",
+  "water 500ml": "ನೀರು 500 ಮಿ.ಲೀ.",
+  "yellu bella covers - 200 nos": "ಎಳ್ಳು ಬೆಲ್ಲ ಕವರ್‌ಗಳು - 200 ನಂ.",
+  "yellu bella mix": "ಎಳ್ಳು ಬೆಲ್ಲ ಮಿಶ್ರಣ",
+  "yippie noodles 272g": "ಯಿಪ್ಪಿ ನೂಡಲ್ಸ್ 272 ಗ್ರಾಂ",
+};
+
+const translateProduct = (language: ReportLanguage, productName: string) => {
+  if (language !== "kn") return productName;
+  return (
+    kannadaProductNames[productName.trim().toLocaleLowerCase("en-IN")] ||
+    productName
+  );
+};
 
 type ReportItem = {
   productId: unknown;
@@ -74,13 +279,13 @@ type ReportData = {
   products: ProductRow[];
 };
 
-const money = (value: number) =>
-  `Rs. ${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 }).format(value || 0)}`;
+const money = (value: number, language: ReportLanguage = "en") =>
+  `${language === "kn" ? "ರೂ." : "Rs."} ${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 }).format(value || 0)}`;
 const number = (value: number) =>
   new Intl.NumberFormat("en-IN", { maximumFractionDigits: 3 }).format(
     value || 0,
   );
-const reportDate = (value: string) => {
+const reportDate = (value: string, language: ReportLanguage = "en") => {
   const [year, month, day] = value.split("-");
   const name = [
     "Jan",
@@ -96,7 +301,21 @@ const reportDate = (value: string) => {
     "Nov",
     "Dec",
   ][Number(month) - 1];
-  return `${day}-${name}-${year}`;
+  const kannadaName = [
+    "ಜನ",
+    "ಫೆಬ್ರ",
+    "ಮಾರ್ಚ್",
+    "ಏಪ್ರಿಲ್",
+    "ಮೇ",
+    "ಜೂನ್",
+    "ಜುಲೈ",
+    "ಆಗಸ್ಟ್",
+    "ಸೆಪ್ಟೆಂ",
+    "ಅಕ್ಟೋ",
+    "ನವೆಂ",
+    "ಡಿಸೆಂ",
+  ][Number(month) - 1];
+  return `${day}-${language === "kn" ? kannadaName : name}-${year}`;
 };
 const hslToHex = (h: number, s: number, l: number) => {
   s /= 100;
@@ -167,31 +386,49 @@ const tableHeader = (
   });
   return y + 24;
 };
-const footer = (doc: PDFKit.PDFDocument) => {
+const footer = (doc: PDFKit.PDFDocument, language: ReportLanguage) => {
   const pages = doc.bufferedPageRange();
   for (let index = 0; index < pages.count; index += 1) {
     doc.switchToPage(index);
     const footerY = PAGE_HEIGHT - 44;
     doc
-      .font("Helvetica")
+      .font(language === "kn" ? "Helvetica-Bold" : "Helvetica")
       .fontSize(7)
       .fillColor("#94a3b8")
-      .text("Sale Ledger - Sales Register", MARGIN, footerY, {
-        width: CONTENT_WIDTH / 2,
-        lineBreak: false,
-      })
-      .text(`Page ${index + 1} of ${pages.count}`, PAGE_WIDTH / 2, footerY, {
-        width: CONTENT_WIDTH / 2,
-        align: "right",
-        lineBreak: false,
-      });
+      .text(
+        translate(language, "Sale Ledger - Sales Register"),
+        MARGIN,
+        footerY,
+        {
+          width: CONTENT_WIDTH / 2,
+          lineBreak: false,
+        },
+      )
+      .text(
+        `${translate(language, "Page")} ${index + 1} ${translate(language, "of")} ${pages.count}`,
+        PAGE_WIDTH / 2,
+        footerY,
+        {
+          width: CONTENT_WIDTH / 2,
+          align: "right",
+          lineBreak: false,
+        },
+      );
   }
 };
 
 export const renderSalesRegisterPdf = (
   doc: PDFKit.PDFDocument,
   data: ReportData,
+  language: ReportLanguage = "en",
 ) => {
+  if (language === "kn") {
+    // The bold merged face preserves both Latin and Kannada shaping reliably
+    // in PDFKit, so use it for normal Kannada report text as well.
+    doc.registerFont("Helvetica-Bold", KANNADA_BOLD_FONT_PATH);
+  }
+  const t = (label: string) => translate(language, label);
+  const m = (value: number) => money(value, language);
   const totalRevenue = data.sales.reduce(
     (sum, sale) => sum + sale.totalAmount,
     0,
@@ -212,20 +449,24 @@ export const renderSalesRegisterPdf = (
     .font("Helvetica-Bold")
     .fontSize(22)
     .fillColor("#111827")
-    .text("Sales Register Report", MARGIN, y);
+    .text(t("Sales Register Report"), MARGIN, y);
   doc
-    .font("Helvetica")
+    .font(language === "kn" ? "Helvetica-Bold" : "Helvetica")
     .fontSize(9)
     .fillColor("#64748b")
-    .text(`${reportDate(data.from)} to ${reportDate(data.to)}`, MARGIN, y + 30);
+    .text(
+      `${reportDate(data.from, language)} - ${reportDate(data.to, language)}`,
+      MARGIN,
+      y + 30,
+    );
   y += 54;
   const cards = [
-    ["Customer sales", String(data.sales.length)],
-    ["Revenue", money(totalRevenue)],
-    ["Cost of goods", money(totalCost)],
-    ["Gross profit", money(totalProfit)],
-    ["Cash / UPI", `${money(cash)} / ${money(upi)}`],
-    ["Credit sales", money(credit)],
+    [t("Customer sales"), String(data.sales.length)],
+    [t("Revenue"), m(totalRevenue)],
+    [t("Cost of goods"), m(totalCost)],
+    [t("Gross profit"), m(totalProfit)],
+    [t("Cash / UPI"), `${m(cash)} / ${m(upi)}`],
+    [t("Credit sales"), m(credit)],
   ];
   const gap = 9;
   const cardWidth = (CONTENT_WIDTH - gap * 2) / 3;
@@ -245,7 +486,7 @@ export const renderSalesRegisterPdf = (
     doc
       .font("Helvetica-Bold")
       .fontSize(12)
-      .fillColor(label === "Gross profit" ? "#16a34a" : "#111827")
+      .fillColor(label === t("Gross profit") ? "#16a34a" : "#111827")
       .text(value, x + 9, cardY + 25, {
         width: cardWidth - 18,
         lineBreak: false,
@@ -254,23 +495,23 @@ export const renderSalesRegisterPdf = (
   });
   y += 128;
 
-  y = sectionTitle(doc, y, "Detailed customer sales");
+  y = sectionTitle(doc, y, t("Detailed customer sales"));
   const saleWidths = [72, 50, 86, 58, 130, 54, 58, 58, 58, 65, 68];
   y = tableHeader(
     doc,
     y,
     [
-      "Date",
-      "Sale",
-      "Customer",
-      "Payment",
-      "Product",
-      "Qty",
-      "Cost/unit",
-      "Sell/unit",
-      "Cost",
-      "Total",
-      "Profit",
+      t("Date"),
+      t("Sale"),
+      t("Customer"),
+      t("Payment"),
+      t("Product"),
+      t("Qty"),
+      t("Cost/unit"),
+      t("Sell/unit"),
+      t("Cost"),
+      t("Total"),
+      t("Profit"),
     ],
     saleWidths,
   );
@@ -290,32 +531,32 @@ export const renderSalesRegisterPdf = (
           doc,
           y,
           [
-            "Date",
-            "Sale",
-            "Customer",
-            "Payment",
-            "Product",
-            "Qty",
-            "Cost/unit",
-            "Sell/unit",
-            "Cost",
-            "Total",
-            "Profit",
+            t("Date"),
+            t("Sale"),
+            t("Customer"),
+            t("Payment"),
+            t("Product"),
+            t("Qty"),
+            t("Cost/unit"),
+            t("Sell/unit"),
+            t("Cost"),
+            t("Total"),
+            t("Profit"),
           ],
           saleWidths,
         );
       const values = [
-        itemIndex === 0 ? reportDate(sale.saleDate) : "",
+        itemIndex === 0 ? reportDate(sale.saleDate, language) : "",
         itemIndex === 0 ? `#${sale.saleNumber}` : "",
-        itemIndex === 0 ? sale.customerName || "Walk-in" : "",
-        itemIndex === 0 ? sale.paymentMode.toUpperCase() : "",
-        item.productName,
-        `${number(item.quantity)} ${item.unit}`,
-        money(item.costPrice),
-        money(item.sellingPrice),
-        money(item.lineCost),
-        money(item.lineTotal),
-        money(item.lineProfit),
+        itemIndex === 0 ? sale.customerName || t("Walk-in") : "",
+        itemIndex === 0 ? translatePayment(language, sale.paymentMode) : "",
+        translateProduct(language, item.productName),
+        `${number(item.quantity)} ${translateUnit(language, item.unit)}`,
+        m(item.costPrice),
+        m(item.sellingPrice),
+        m(item.lineCost),
+        m(item.lineTotal),
+        m(item.lineProfit),
       ];
       if (itemIndex % 2 === 1)
         doc.rect(MARGIN, y, CONTENT_WIDTH, rowHeight).fill("#f8fafc");
@@ -323,7 +564,7 @@ export const renderSalesRegisterPdf = (
       values.forEach((value, index) => {
         if (index === 5 && dairyLitres !== null) {
           doc
-            .font("Helvetica")
+            .font(language === "kn" ? "Helvetica-Bold" : "Helvetica")
             .fontSize(6.2)
             .fillColor("#111827")
             .text(value, x + 5, y + 4, {
@@ -343,7 +584,9 @@ export const renderSalesRegisterPdf = (
           return;
         }
         doc
-          .font(index === 10 ? "Helvetica-Bold" : "Helvetica")
+          .font(
+            index === 10 || language === "kn" ? "Helvetica-Bold" : "Helvetica",
+          )
           .fontSize(6.2)
           .fillColor(
             index === 10 && item.lineProfit >= 0 ? "#16a34a" : "#111827",
@@ -365,7 +608,7 @@ export const renderSalesRegisterPdf = (
   }
 
   y = addPage(doc);
-  y = sectionTitle(doc, y, "Sales by category");
+  y = sectionTitle(doc, y, t("Sales by category"));
   const chartX = 145;
   const chartY = y + 120;
   const radius = 82;
@@ -390,17 +633,17 @@ export const renderSalesRegisterPdf = (
     .font("Helvetica-Bold")
     .fontSize(14)
     .fillColor("#111827")
-    .text(money(totalRevenue), chartX - 44, chartY - 7, {
+    .text(m(totalRevenue), chartX - 44, chartY - 7, {
       width: 88,
       align: "center",
       lineBreak: false,
       ellipsis: true,
     });
   doc
-    .font("Helvetica")
+    .font(language === "kn" ? "Helvetica-Bold" : "Helvetica")
     .fontSize(7)
     .fillColor("#64748b")
-    .text("total revenue", chartX - 44, chartY + 12, {
+    .text(t("total revenue"), chartX - 44, chartY + 12, {
       width: 88,
       align: "center",
     });
@@ -410,16 +653,24 @@ export const renderSalesRegisterPdf = (
     doc,
     categoryX,
     y + 18,
-    ["Category", "Revenue", "Cost", "Profit", "Sales", "Entries", "Share"],
+    [
+      t("Category"),
+      t("Revenue"),
+      t("Cost"),
+      t("Profit"),
+      t("Sales"),
+      t("Entries"),
+      t("Share"),
+    ],
     categoryWidths,
   );
   data.categories.forEach((category) => {
     doc.circle(categoryX + 8, categoryY + 10, 4).fill(category.color);
     const values = [
-      category.name,
-      money(category.revenue),
-      money(category.cost),
-      money(category.profit),
+      translateCategory(language, category.name),
+      m(category.revenue),
+      m(category.cost),
+      m(category.profit),
       String(category.saleCount),
       String(category.entries),
       `${totalRevenue ? Math.round((category.revenue / totalRevenue) * 100) : 0}%`,
@@ -427,7 +678,7 @@ export const renderSalesRegisterPdf = (
     let x = categoryX;
     values.forEach((value, index) => {
       doc
-        .font(index === 3 ? "Helvetica-Bold" : "Helvetica")
+        .font(index === 3 || language === "kn" ? "Helvetica-Bold" : "Helvetica")
         .fontSize(7)
         .fillColor(index === 3 && category.profit >= 0 ? "#16a34a" : "#111827")
         .text(value, x + (index === 0 ? 16 : 5), categoryY + 6, {
@@ -451,16 +702,16 @@ export const renderSalesRegisterPdf = (
 
   if (data.categories.length > firstPageCategories.length) {
     y = addPage(doc);
-    y = sectionTitle(doc, y, "Sales by category (continued)");
+    y = sectionTitle(doc, y, t("Sales by category (continued)"));
     const continuedWidths = [200, 105, 100, 100, 80, 80, 92];
     const labels = [
-      "Category",
-      "Revenue",
-      "Cost",
-      "Profit",
-      "Sales",
-      "Entries",
-      "Share",
+      t("Category"),
+      t("Revenue"),
+      t("Cost"),
+      t("Profit"),
+      t("Sales"),
+      t("Entries"),
+      t("Share"),
     ];
     y = tableHeader(doc, y, labels, continuedWidths);
     data.categories
@@ -472,10 +723,10 @@ export const renderSalesRegisterPdf = (
           doc.rect(MARGIN, y, CONTENT_WIDTH, 23).fill("#f8fafc");
         doc.circle(MARGIN + 11, y + 11, 4).fill(category.color);
         const values = [
-          category.name,
-          money(category.revenue),
-          money(category.cost),
-          money(category.profit),
+          translateCategory(language, category.name),
+          m(category.revenue),
+          m(category.cost),
+          m(category.profit),
           String(category.saleCount),
           String(category.entries),
           `${totalRevenue ? Math.round((category.revenue / totalRevenue) * 100) : 0}%`,
@@ -483,7 +734,11 @@ export const renderSalesRegisterPdf = (
         let x = MARGIN;
         values.forEach((value, column) => {
           doc
-            .font(column === 3 ? "Helvetica-Bold" : "Helvetica")
+            .font(
+              column === 3 || language === "kn"
+                ? "Helvetica-Bold"
+                : "Helvetica",
+            )
             .fontSize(7.4)
             .fillColor(
               column === 3 && category.profit >= 0 ? "#16a34a" : "#111827",
@@ -506,7 +761,7 @@ export const renderSalesRegisterPdf = (
   }
 
   y = ensure(doc, y, 88);
-  y = sectionTitle(doc, y, "Sales performance highlights");
+  y = sectionTitle(doc, y, t("Sales performance highlights"));
   const top = data.products[0];
   const topDairyLitres = top
     ? getDairyLitres(top.categoryName, top.name, top.quantity, top.unit)
@@ -516,20 +771,29 @@ export const renderSalesRegisterPdf = (
   )[0];
   const highlights = [
     [
-      "Top quantity sold",
-      top ? top.name : "-",
-      top ? `${number(top.quantity)} ${top.unit}` : "No sales",
+      t("Top quantity sold"),
+      top ? translateProduct(language, top.name) : "-",
+      top
+        ? `${number(top.quantity)} ${translateUnit(language, top.unit)}`
+        : t("No sales"),
       topDairyLitres === null ? "" : `${number(topDairyLitres)} L`,
     ],
     [
-      "Most profitable sale",
+      t("Most profitable sale"),
       mostProfitable
-        ? `#${mostProfitable.saleNumber} - ${money(mostProfitable.totalProfit)}`
+        ? `#${mostProfitable.saleNumber} - ${m(mostProfitable.totalProfit)}`
         : "-",
-      mostProfitable ? reportDate(mostProfitable.saleDate) : "No sales",
+      mostProfitable
+        ? reportDate(mostProfitable.saleDate, language)
+        : t("No sales"),
       "",
     ],
-    ["Period profit", money(totalProfit), `${money(totalRevenue)} revenue`, ""],
+    [
+      t("Period profit"),
+      m(totalProfit),
+      `${m(totalRevenue)} ${t("revenue")}`,
+      "",
+    ],
   ];
   highlights.forEach(([label, value, meta, dairyMeta], index) => {
     const x = MARGIN + index * (cardWidth + gap);
@@ -542,7 +806,7 @@ export const renderSalesRegisterPdf = (
     doc
       .font("Helvetica-Bold")
       .fontSize(12)
-      .fillColor(label === "Period profit" ? "#16a34a" : "#111827")
+      .fillColor(label === t("Period profit") ? "#16a34a" : "#111827")
       .text(value, x + 10, y + 27, {
         width: cardWidth - 20,
         lineBreak: false,
@@ -564,15 +828,15 @@ export const renderSalesRegisterPdf = (
   y += 84;
 
   y = ensure(doc, y, 70);
-  y = sectionTitle(doc, y, "Products sold in selected period");
+  y = sectionTitle(doc, y, t("Products sold in selected period"));
   const productWidths = [210, 120, 80, 115, 115, 117];
   const productLabels = [
-    "Product",
-    "Quantity sold",
-    "Sale entries",
-    "Revenue",
-    "Cost",
-    "Profit",
+    t("Product"),
+    t("Quantity sold"),
+    t("Sale entries"),
+    t("Revenue"),
+    t("Cost"),
+    t("Profit"),
   ];
   y = tableHeader(doc, y, productLabels, productWidths);
   const productGroups = new Map<string, ProductRow[]>();
@@ -602,7 +866,7 @@ export const renderSalesRegisterPdf = (
       .fontSize(8.2)
       .fillColor("#111827")
       .text(
-        `${group.name}${continued ? " (continued)" : ""}`,
+        `${translateCategory(language, group.name)}${continued ? ` (${t("continued")})` : ""}`,
         MARGIN + 8,
         y + 5,
         {
@@ -616,16 +880,16 @@ export const renderSalesRegisterPdf = (
       .fontSize(6.5)
       .fillColor("#64748b")
       .text(
-        `${group.products.length} ${group.products.length === 1 ? "product" : "products"}`,
+        `${group.products.length} ${t(group.products.length === 1 ? "product" : "products")}`,
         MARGIN + 8,
         y + 15,
         { width: productWidths[0] + productWidths[1] - 16, lineBreak: false },
       );
     const values = [
       String(group.entries),
-      money(group.revenue),
-      money(group.cost),
-      money(group.profit),
+      m(group.revenue),
+      m(group.cost),
+      m(group.profit),
     ];
     let x = MARGIN + productWidths[0] + productWidths[1];
     values.forEach((value, index) => {
@@ -662,12 +926,12 @@ export const renderSalesRegisterPdf = (
       if (index % 2 === 1)
         doc.rect(MARGIN, y, CONTENT_WIDTH, rowHeight).fill("#f8fafc");
       const values = [
-        product.name,
-        `${number(product.quantity)} ${product.unit}`,
+        translateProduct(language, product.name),
+        `${number(product.quantity)} ${translateUnit(language, product.unit)}`,
         String(product.entries),
-        money(product.revenue),
-        money(product.cost),
-        money(product.profit),
+        m(product.revenue),
+        m(product.cost),
+        m(product.profit),
       ];
       let x = MARGIN;
       values.forEach((value, column) => {
@@ -693,7 +957,11 @@ export const renderSalesRegisterPdf = (
           return;
         }
         doc
-          .font(column === 0 || column === 5 ? "Helvetica-Bold" : "Helvetica")
+          .font(
+            column === 0 || column === 5 || language === "kn"
+              ? "Helvetica-Bold"
+              : "Helvetica",
+          )
           .fontSize(7.4)
           .fillColor(
             column === 5 && product.profit >= 0 ? "#16a34a" : "#111827",
@@ -713,7 +981,7 @@ export const renderSalesRegisterPdf = (
       y += rowHeight;
     });
   });
-  footer(doc);
+  footer(doc, language);
 };
 
 const tableHeaderAt = (
@@ -747,7 +1015,11 @@ export const downloadSalesRegisterReportPdf = async (
 ) => {
   try {
     if (!req.user?.id) throw new Error("User not available in request");
-    const range = rangeSchema.parse({ from: req.query.from, to: req.query.to });
+    const range = rangeSchema.parse({
+      from: req.query.from,
+      to: req.query.to,
+      language: req.query.language,
+    });
     const sales = (await SaleTransaction.find({
       userId: req.user.id,
       saleDate: { $gte: range.from, $lte: range.to },
@@ -828,15 +1100,20 @@ export const downloadSalesRegisterReportPdf = async (
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="Sales-Register-${range.from}-to-${range.to}.pdf"`,
+      `attachment; filename="Sales-Register-${range.language === "kn" ? "Kannada-" : ""}${range.from}-to-${range.to}.pdf"`,
     );
     doc.pipe(res);
-    renderSalesRegisterPdf(doc, {
-      ...range,
-      sales,
-      categories,
-      products: productRows,
-    });
+    renderSalesRegisterPdf(
+      doc,
+      {
+        from: range.from,
+        to: range.to,
+        sales,
+        categories,
+        products: productRows,
+      },
+      range.language,
+    );
     doc.end();
   } catch (error) {
     res.status(400).json({

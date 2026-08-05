@@ -2,6 +2,7 @@ import PDFDocument from "pdfkit";
 import { Request, Response } from "express";
 import { z } from "zod";
 import { Purchase } from "../models/Purchase.model";
+import { getDairyLitres } from "../utils/dairy";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const rangeSchema = z
@@ -73,25 +74,6 @@ const formatReportDate = (value: string) => {
     "Dec",
   ][month - 1];
   return `${String(day).padStart(2, "0")} ${monthName} ${year}`;
-};
-
-const getDairyLitres = (
-  categoryName: string,
-  productName: string,
-  quantity: number,
-  unit: string,
-) => {
-  if (
-    categoryName.trim().toLocaleLowerCase("en-IN") !== "dairy" ||
-    unit.trim().toLocaleLowerCase("en-IN") !== "packets"
-  ) {
-    return null;
-  }
-
-  const volumeMatch = productName.match(/\b(200|500)\s*ml\b/i);
-  if (!volumeMatch) return null;
-
-  return quantity * (Number(volumeMatch[1]) / 1000);
 };
 
 const formatLitres = (value: number) =>

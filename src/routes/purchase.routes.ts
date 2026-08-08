@@ -9,6 +9,10 @@ import {
 } from "../controllers/purchase.controller";
 import { protect } from "../middlewares/auth.middleware";
 import { downloadPurchaseReportPdf } from "../controllers/purchaseReport.controller";
+import {
+  downloadMonthlyPurchaseReportPdf,
+  getMonthlyPurchaseReport,
+} from "../controllers/purchaseMonthlyReport.controller";
 
 const router = Router();
 
@@ -17,6 +21,8 @@ router.get("/", getPurchases);
 router.post("/", createPurchase);
 router.get("/summary", getPurchaseSummary);
 router.get("/report/pdf", downloadPurchaseReportPdf);
+router.get("/monthly-report", getMonthlyPurchaseReport);
+router.get("/monthly-report/pdf", downloadMonthlyPurchaseReportPdf);
 router.get("/products/:productId/history", getProductPurchaseHistory);
 router.put("/:id", updatePurchase);
 router.delete("/:id", deletePurchase);

@@ -1981,6 +1981,23 @@ export const downloadYearlyEntriesPdf = async (req: Request, res: Response) => {
     return;
   }
 
+  const monthsParam =
+    typeof req.query.months === "string" ? req.query.months : "";
+  const selectedMonths = monthsParam
+    ? [...new Set(monthsParam.split(",").map(Number))].sort((a, b) => a - b)
+    : Array.from({ length: 12 }, (_, index) => index + 1);
+  if (
+    selectedMonths.length === 0 ||
+    selectedMonths.some(
+      (month) => !Number.isInteger(month) || month < 1 || month > 12,
+    )
+  ) {
+    res
+      .status(400)
+      .json({ message: "months must contain values from 1 to 12" });
+    return;
+  }
+
   const yearStart = `${year}-01-01`;
   const yearEnd = `${year + 1}-01-01`;
 
@@ -2045,7 +2062,11 @@ export const downloadYearlyEntriesPdf = async (req: Request, res: Response) => {
     }).lean(),
   ]);
 
-  if (monthlyAggregations.length === 0) {
+  const selectedMonthlyAggregations = monthlyAggregations.filter((item) =>
+    selectedMonths.includes(Number(item._id)),
+  );
+
+  if (selectedMonthlyAggregations.length === 0) {
     res.status(404).json({
       message: `No entries found for ${year}`,
     });
@@ -2056,50 +2077,52 @@ export const downloadYearlyEntriesPdf = async (req: Request, res: Response) => {
     fixedExpenseDocuments.map((item) => [Number(item.month), item]),
   );
 
-  const rows: AnnualMonthPdfRow[] = monthlyAggregations.map((aggregation) => {
-    const month = Number(aggregation._id);
+  const rows: AnnualMonthPdfRow[] = selectedMonthlyAggregations.map(
+    (aggregation) => {
+      const month = Number(aggregation._id);
 
-    const savedFixedExpense = fixedExpenseByMonth.get(month);
+      const savedFixedExpense = fixedExpenseByMonth.get(month);
 
-    const shopRent = Number(
-      savedFixedExpense?.shopRent ?? DEFAULT_FIXED_EXPENSE.shopRent,
-    );
+      const shopRent = Number(
+        savedFixedExpense?.shopRent ?? DEFAULT_FIXED_EXPENSE.shopRent,
+      );
 
-    const shopkeeperSalary = Number(
-      savedFixedExpense?.shopkeeperSalary ??
-        DEFAULT_FIXED_EXPENSE.shopkeeperSalary,
-    );
+      const shopkeeperSalary = Number(
+        savedFixedExpense?.shopkeeperSalary ??
+          DEFAULT_FIXED_EXPENSE.shopkeeperSalary,
+      );
 
-    const electricityBill = Number(
-      savedFixedExpense?.electricityBill ??
-        DEFAULT_FIXED_EXPENSE.electricityBill,
-    );
+      const electricityBill = Number(
+        savedFixedExpense?.electricityBill ??
+          DEFAULT_FIXED_EXPENSE.electricityBill,
+      );
 
-    /*
-     * Always recalculate to keep it consistent with the individual
-     * fixed-expense components.
-     */
-    const totalFixedExpense = shopRent + shopkeeperSalary + electricityBill;
+      /*
+       * Always recalculate to keep it consistent with the individual
+       * fixed-expense components.
+       */
+      const totalFixedExpense = shopRent + shopkeeperSalary + electricityBill;
 
-    const totalProfit = Number(aggregation.totalProfit) || 0;
+      const totalProfit = Number(aggregation.totalProfit) || 0;
 
-    return {
-      month,
-      monthName: getMonthName(month),
-      entryCount: Number(aggregation.entryCount) || 0,
-      totalSales: Number(aggregation.totalSales) || 0,
-      totalCash: Number(aggregation.totalCash) || 0,
-      totalPhonePe: Number(aggregation.totalPhonePe) || 0,
-      totalCollection: Number(aggregation.totalCollection) || 0,
-      totalExpense: Number(aggregation.totalExpense) || 0,
-      totalProfit,
-      shopRent,
-      shopkeeperSalary,
-      electricityBill,
-      totalFixedExpense,
-      netProfit: totalProfit - totalFixedExpense,
-    };
-  });
+      return {
+        month,
+        monthName: getMonthName(month),
+        entryCount: Number(aggregation.entryCount) || 0,
+        totalSales: Number(aggregation.totalSales) || 0,
+        totalCash: Number(aggregation.totalCash) || 0,
+        totalPhonePe: Number(aggregation.totalPhonePe) || 0,
+        totalCollection: Number(aggregation.totalCollection) || 0,
+        totalExpense: Number(aggregation.totalExpense) || 0,
+        totalProfit,
+        shopRent,
+        shopkeeperSalary,
+        electricityBill,
+        totalFixedExpense,
+        netProfit: totalProfit - totalFixedExpense,
+      };
+    },
+  );
 
   const totals = rows.reduce<AnnualPdfTotals>(
     (acc, row) => {
@@ -2158,9 +2181,12 @@ export const downloadYearlyEntriesPdf = async (req: Request, res: Response) => {
     .font("Helvetica")
     .fontSize(14)
     .fillColor("#475569")
-    .text(String(year), {
-      align: "center",
-    });
+    .text(
+      `${year} - ${selectedMonths.map((month) => getMonthName(month)).join(", ")}`,
+      {
+        align: "center",
+      },
+    );
 
   doc.moveDown(0.8);
 
@@ -2279,15 +2305,13 @@ export const downloadYearlyEntriesPdf = async (req: Request, res: Response) => {
     drawAnnualHeader();
   }
 
- y += drawAnnualTableRow(doc, y, totalsRow, {
+  y += drawAnnualTableRow(doc, y, totalsRow, {
+    ...totalsRowOptions,
 
-  ...totalsRowOptions,
+    fillColor: "#f8fafc",
 
-  fillColor: "#f8fafc",
-
-  textColor: "#111827",
-
-});
+    textColor: "#111827",
+  });
 
   y += 20;
 

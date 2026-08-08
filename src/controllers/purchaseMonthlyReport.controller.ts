@@ -233,8 +233,13 @@ export const downloadMonthlyPurchaseReportPdf = async (
     ];
     const tableWidth = widths.reduce((total, width) => total + width, 0);
     const pageWidth = tableWidth + 56;
-    const pageHeight = Math.max(595.28, 70 + 30 + report.rows.length * 28 + 52);
-    const doc = new PDFDocument({ size: [pageWidth, pageHeight], margin: 28 });
+    const pageHeight = 595.28;
+    const contentBottom = pageHeight - 48;
+    const doc = new PDFDocument({
+      size: [pageWidth, pageHeight],
+      margin: 28,
+      bufferPages: true,
+    });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
@@ -268,37 +273,41 @@ export const downloadMonthlyPurchaseReportPdf = async (
         0,
       );
 
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(18)
-      .fillColor("#111827")
-      .text(`Monthly Purchase Report - ${query.year}`, 28, 24);
-    doc
-      .font("Helvetica")
-      .fontSize(9)
-      .fillColor("#64748b")
-      .text(
-        `Months: ${months.map((month) => MONTHS[month]).join(", ")} | Average price = total cost / total quantity`,
-        28,
-        48,
-      );
-    let y = 70;
-    doc.rect(28, y, tableWidth, 30).fill("#111827");
-    let x = 28;
-    headers.forEach((header, index) => {
+    const drawPageHeader = () => {
       doc
         .font("Helvetica-Bold")
-        .fontSize(7)
-        .fillColor("#ffffff")
-        .text(header, x + 3, y + 10, {
-          width: widths[index] - 6,
-          height: 10,
-          lineBreak: false,
-          align: index >= 2 ? "right" : "left",
-        });
-      x += widths[index];
-    });
-    y += 30;
+        .fontSize(18)
+        .fillColor("#111827")
+        .text(`Monthly Purchase Report - ${query.year}`, 28, 24);
+      doc
+        .font("Helvetica")
+        .fontSize(9)
+        .fillColor("#64748b")
+        .text(
+          `Months: ${months.map((month) => MONTHS[month]).join(", ")} | Average price = total cost / total quantity`,
+          28,
+          48,
+        );
+      const headerY = 70;
+      doc.rect(28, headerY, tableWidth, 30).fill("#111827");
+      let headerX = 28;
+      headers.forEach((header, index) => {
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(7)
+          .fillColor("#ffffff")
+          .text(header, headerX + 3, headerY + 10, {
+            width: widths[index] - 6,
+            height: 10,
+            lineBreak: false,
+            align: index >= 2 ? "right" : "left",
+          });
+        headerX += widths[index];
+      });
+      return headerY + 30;
+    };
+
+    let y = drawPageHeader();
     for (const [rowIndex, row] of [...report.rows]
       .sort(
         (a, b) =>
@@ -322,10 +331,14 @@ export const downloadMonthlyPurchaseReportPdf = async (
         quantity(row, selectedTotalQuantity(row)),
         money(selectedTotalCost(row)),
       ];
+      if (y + 28 > contentBottom) {
+        doc.addPage({ size: [pageWidth, pageHeight], margin: 28 });
+        y = drawPageHeader();
+      }
       doc
         .rect(28, y, tableWidth, 28)
         .fill(rowIndex % 2 === 0 ? "#f8fafc" : "#ffffff");
-      x = 28;
+      let x = 28;
       cells.forEach((cell, index) => {
         const lines = cell.split("\n");
         const font = index >= cells.length - 2 ? "Helvetica-Bold" : "Helvetica";
@@ -357,14 +370,20 @@ export const downloadMonthlyPurchaseReportPdf = async (
       });
       y += 28;
     }
-    doc
-      .font("Helvetica")
-      .fontSize(7)
-      .fillColor("#64748b")
-      .text("All months shown on one comparison sheet", 28, pageHeight - 40, {
-        width: pageWidth - 56,
-        align: "right",
-      });
+    const pageRange = doc.bufferedPageRange();
+    for (let pageIndex = 0; pageIndex < pageRange.count; pageIndex += 1) {
+      doc.switchToPage(pageIndex);
+      doc
+        .font("Helvetica")
+        .fontSize(7)
+        .fillColor("#64748b")
+        .text(
+          `All selected columns shown together | Page ${pageIndex + 1} of ${pageRange.count}`,
+          28,
+          pageHeight - 40,
+          { width: pageWidth - 56, align: "right", lineBreak: false },
+        );
+    }
     doc.end();
   } catch (error) {
     if (!res.headersSent)
